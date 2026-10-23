@@ -1,1 +1,128 @@
+# Ignore rules for this repository. The base rules come first, then one block
+# per ecosystem the project uses: Rust, then shell.
+#
+# .gitignore only applies to files git is not ALREADY tracking. Adding a line
+# does not untrack what is already in. Check with: git ls-files
+
+# -- secrets. Never committed, no exceptions ---------------------------------
+# Listed BEFORE the files exist, so one can never be staged by accident.
+# A credential file added here after the fact was trackable in between.
 .env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+id_rsa
+id_ed25519
+credentials.json
+service-account*.json
+*.token
+.*_token
+.*-token
+
+# -- scratch and temporary work ---------------------------------------------
+.tmp/
+tmp/
+scratch/
+.scratch/
+
+# -- logs --------------------------------------------------------------------
+*.log
+logs/
+
+# -- local databases ---------------------------------------------------------
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-wal
+*.db-shm
+*.db-wal
+
+# -- coverage and test output -----------------------------------------------
+coverage/
+.coverage
+htmlcov/
+test-results/
+.nyc_output/
+
+# -- agent and assistant local files ----------------------------------------
+.claude/settings.local.json
+CLAUDE.local.md
+.aider*
+.cursorignore
+
+# -- reference material cloned for study ------------------------------------
+# NOT IGNORED, AND THAT IS A CORRECTION. These rules used to read
+# `references/`, on the reasoning that a tree is re-clonable from the URL its
+# write-up records and only the derived file needs tracking.
+#
+# That reasoning was wrong twice over, and both were paid for. A sweep that
+# kept only its conclusions left the next session re-cloning eleven trees to
+# check one citation. A sweep that kept its data in an ignored directory lost
+# it entirely, along with the tools it had written to gather it, because
+# nothing untracked survives a session. A conclusion nobody can re-check is
+# an opinion. docs/methodology/research.md section 3.4 is the rule.
+#
+# Where a corpus is genuinely too large for every clone, put it on its own
+# BRANCH and say so in the write-up. That is still tracked. An ignore rule is
+# not a size decision, it is a deletion nobody notices.
+temp/
+
+# WINDOWS RESERVED DEVICE NAMES. Two different things create one as a real
+# file, and only the first is something you wrote:
+#   1. your own redirect: 2>/dev/null under a shell that does not map it makes
+#      a real file called nul, which git then tracks, which breaks git stash
+#      outright, and which cannot be deleted by rm or by Python;
+#   2. a tool's own argument list: podman machine ssh passes
+#      -o UserKnownHostsFile=NUL to its ssh, and under Git Bash that is a
+#      filename, so a 99-byte NUL holding an ssh host key lands in whatever
+#      directory the command ran in. Usually a repository.
+# MSYS_NO_PATHCONV does not prevent the second one: the argument never looked
+# like a path. Ignoring the whole set is what stops the recurrence.
+nul
+CON
+PRN
+AUX
+NUL
+COM[1-9]
+LPT[1-9]
+CON.*
+PRN.*
+AUX.*
+NUL.*
+COM[1-9].*
+LPT[1-9].*
+
+# -- Rust --------------------------------------------------------------------
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo.lock IS committed for a binary, because it is what makes a build
+# reproducible. It is conventionally NOT committed for a library. Decide once,
+# say which this is, and hold to it.
+
+# Criterion benchmark output. The RUNNERS are tracked source; the CAPTURES are
+# not. A run that IS the evidence for an item goes in deliberately:
+#   git add -f bench/the-one-that-matters.json
+/criterion/
+
+# -- shell -------------------------------------------------------------------
+# shellcheck and shfmt leave nothing behind, so this block is mostly about the
+# things a shell project accumulates around itself.
+*.bak
+*.orig
+*.rej
+.shellcheckrc.local
+
+# A script that writes a report writes it here. The RUNNERS are tracked source;
+# the CAPTURES are not. A run that IS the evidence for an item goes in
+# deliberately with: git add -f
+out/
+reports/

@@ -1,0 +1,39 @@
+launch bench on bt (first): 11289 ms
+rehash: warning: skipping ca-certificates.crt, it does not contain exactly one certificate or CRL
+rehash: warning: skipping proxy-ca.pem, it does not contain exactly one certificate or CRL
+PASS systemd is PID 1 (/usr/lib/systemd/systemd, state running)
+PASS docker started by systemd: 26.1.5+dfsg1
+PASS docker load inside
+PASS docker run inside: debian 13.7
+PASS docker build inside (legacy builder)
+PASS podman run inside (containers.conf cgroups=disabled): debian 13.7, driver overlay
+PASS fuse: rclone mount of a local dir
+PASS network storage over fuse: rclone :http: through the relay
+PASS start a stopped instance + exec true: median 285 ms ( 307 285 285 299 245)
+PASS golden copy + start + exec true: median 415 ms ( 415 412 1128)
+Error: Failed to fetch instance "g3" in project "default": Instance not found
+Error: Failed to fetch instance "g3" in project "default": Instance not found
+Error: Failed to fetch instance "g3" in project "default": Instance not found
+Error: Failed to fetch instance "g3" in project "default": Instance not found
+Error: Failed to fetch instance "gi1" in project "default": Instance not found
+Error: Failed to fetch instance "gi2" in project "default": Instance not found
+Error: Failed to fetch instance "gi3" in project "default": Instance not found
+INFO golden copy of an isolated instance + start + exec true: median 17 ms ( 15 17 19); maps: 
+Error: Failed checking instance exists "local:gi1": Failed to fetch instance "gi1" in project "default": Instance not found
+Error: Failed checking instance exists "local:gi2": Failed to fetch instance "gi2" in project "default": Instance not found
+Error: Failed checking instance exists "local:gi3": Failed to fetch instance "gi3" in project "default": Instance not found
+Error: Failed to fetch instance "g3" in project "default": Instance not found
+FAIL lim start
+PASS btrfs root.size=1GiB enforced (dd exit 1: Error: Failed to fetch instance "lim" in project "default": Instance not found)
+Error: Failed to fetch instance "lim" in project "default": Instance not found
+Error: Failed to fetch instance "lim" in project "default": Instance not found
+<scratch>/work/x91-incus-features.sh: 114: [: Illegal number: 
+FAIL guest MemTotal  kB
+Error: Failed to fetch instance "lim" in project "default": Instance not found
+Error: Failed to fetch instance "lim" in project "default": Instance not found
+FAIL nproc 
+FAIL memory loop exit 1
+Error: Failed checking instance exists "local:lim": Failed to fetch instance "lim" in project "default": Instance not found
+Error: Failed checking instance exists "local:lim": Failed to fetch instance "lim" in project "default": Instance not found
+conditions: host=Linux 6.18.44-fc-v153 x86_64 cpus=4 cgroup=v1 kvm=no incus=6.0.0 pool=bt lxcfs= date=2026-10-23T06:00:39Z
+rc=1

@@ -1,0 +1,53 @@
+#!/bin/sh
+# commit-msg - refuse a commit message that credits a tool, BEFORE it exists.
+#
+# THIS HOOK EXISTS BECAUSE THE GATE STRUCTURALLY CANNOT DO IT.
+# scripts/common/check-attribution is the only check whose subject is `git log`
+# rather than the tracked tree, and every session's procedure is "run the gate,
+# then commit". At the moment the gate runs, the commit being made does not
+# exist, so that check reads only old commits and is always green. It reports
+# the defect afterwards, from the next gate run or from CI, by which time the
+# commit is made and possibly pushed. On a protected branch that costs a
+# maintainer turning branch protection off and on again.
+#
+# INSTALL IT. Hooks are not cloned, so a fresh checkout has none until:
+#
+#   git config core.hooksPath .githooks
+#
+# docs/conventions/git.md carries the same command and the rule behind it.
+#
+# IT REFUSES WHEN IT CANNOT RUN, and that is not the same as being strict for
+# its own sake. git treats any non-zero exit as a rejection, so the only two
+# honest answers a hook has are "checked and allowed" and "not allowed". A hook
+# that exits 0 because it could not find its check has reported success over a
+# message it never read, which is the failure this whole repository is built to
+# refuse.
+#
+# Exit codes: 0 the message is allowed, 1 it is refused, 2 the check could not run.
+#
+# SPDX-License-Identifier: 0BSD
+
+set -u
+
+[ $# -ge 1 ] || { printf 'commit-msg: git passes the message file as $1 and did not\n' >&2; exit 2; }
+
+command -v git >/dev/null 2>&1 || { printf 'commit-msg: git not found\n' >&2; exit 2; }
+REPO_ROOT=$(git rev-parse --show-toplevel) || exit 2
+
+CHECK="$REPO_ROOT/scripts/common/check-attribution.sh"
+if [ ! -f "$CHECK" ]; then
+  printf 'commit-msg: %s is not there, so the message was NOT checked.\n' "$CHECK" >&2
+  printf '  That is "could not run" rather than a pass. Restore the check, or\n' >&2
+  printf '  remove this hook deliberately: git config --unset core.hooksPath\n' >&2
+  exit 2
+fi
+
+# The exit code is this process's own, unpiped.
+sh "$CHECK" --message "$1"
+status=$?
+if [ "$status" -ne 0 ]; then
+  printf '\n' >&2
+  printf 'The commit was refused and nothing was written. Edit the message and\n' >&2
+  printf 'commit again. docs/conventions/git.md is the rule.\n' >&2
+fi
+exit "$status"

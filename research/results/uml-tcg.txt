@@ -1,0 +1,99 @@
+## ptrace
+guest: 6.18.58 cpus=1 mem=2058880kB
+RESULT spawn@workspace 4113
+RESULT spawn@workspace 3374
+RESULT spawn@workspace 3388
+RESULT files@workspace 4240
+RESULT files@workspace 4169
+RESULT files@workspace 4150
+RESULT git@workspace 4563
+RESULT git@workspace 4816
+RESULT git@workspace 4671
+RESULT cpu@workspace 493
+RESULT cpu@workspace 464
+RESULT cpu@workspace 463
+RESULT compile@workspace 71055
+RESULT compile@workspace 70481
+RESULT compile@workspace 72422
+RESULT spawn@scratch 3787
+RESULT spawn@scratch 3761
+RESULT spawn@scratch 3690
+RESULT files@scratch 4449
+RESULT files@scratch 4430
+RESULT files@scratch 4253
+RESULT git@scratch 4642
+RESULT git@scratch 4497
+RESULT git@scratch 4601
+RESULT cpu@scratch 519
+RESULT cpu@scratch 547
+RESULT cpu@scratch 502
+RESULT compile@scratch 71930
+RESULT compile@scratch 69259
+RESULT compile@scratch 69142
+DONE
+## seccomp
+guest: 6.18.58 cpus=1 mem=2058880kB
+RESULT spawn@workspace 2198
+RESULT spawn@workspace 2257
+RESULT spawn@workspace 2110
+RESULT files@workspace 3890
+RESULT files@workspace 3729
+RESULT files@workspace 3911
+RESULT git@workspace 2971
+RESULT git@workspace 2779
+RESULT git@workspace 2897
+RESULT cpu@workspace 391
+RESULT cpu@workspace 383
+RESULT cpu@workspace 400
+RESULT compile@workspace 36654
+RESULT compile@workspace 37039
+RESULT compile@workspace 38119
+RESULT spawn@scratch 2175
+RESULT spawn@scratch 2140
+RESULT spawn@scratch 2234
+RESULT files@scratch 3679
+RESULT files@scratch 3739
+RESULT files@scratch 3666
+RESULT git@scratch 2673
+RESULT git@scratch 2733
+RESULT git@scratch 2674
+RESULT cpu@scratch 405
+RESULT cpu@scratch 402
+RESULT cpu@scratch 419
+RESULT compile@scratch 36879
+RESULT compile@scratch 36558
+RESULT compile@scratch 37831
+DONE
+## tcg
+guest: 6.18.58 cpus=4 mem=2022588kB
+RESULT spawn@workspace 12573
+RESULT spawn@workspace 12350
+RESULT spawn@workspace 12098
+RESULT files@workspace 5717
+RESULT files@workspace 5340
+RESULT files@workspace 5116
+RESULT git@workspace 3966
+RESULT git@workspace 4239
+RESULT git@workspace 3863
+RESULT cpu@workspace 6776
+RESULT cpu@workspace 7893
+RESULT cpu@workspace 7837
+RESULT compile@workspace 32824
+RESULT compile@workspace 30010
+RESULT compile@workspace 31148
+RESULT spawn@scratch 12110
+RESULT spawn@scratch 11520
+RESULT spawn@scratch 11751
+RESULT files@scratch 3962
+RESULT files@scratch 3498
+RESULT files@scratch 3744
+RESULT git@scratch 2901
+RESULT git@scratch 2444
+RESULT git@scratch 2363
+RESULT cpu@scratch 7032
+RESULT cpu@scratch 6626
+RESULT cpu@scratch 8443
+RESULT compile@scratch 31284
+RESULT compile@scratch 31200
+RESULT compile@scratch 31499
+DONE

@@ -1,0 +1,34 @@
+# Versions and sha256 digests of everything errand-box downloads.
+#
+# `latest` names the newest pinned version, and `latest` in errand-box.toml
+# means that one: errand-box never runs bytes whose digest it has not
+# recorded here. The freshness workflow (.github/workflows/freshness.yml)
+# checks upstream releases every week and opens a pull request that adds a
+# new version and moves `latest`.
+#
+# Digests: each value matches the digest GitHub records for the release
+# asset, and for errand also the .sha256 file errand publishes next to each
+# asset (checked 2026-10-23). scripts/pins.sh checks both when it adds a
+# version.
+
+[kage]
+latest = "v0.5.0"
+
+[kage.versions."v0.5.0".x86_64]
+url = "https://github.com/QaidVoid/kage/releases/download/v0.5.0/kage-x86_64-linux.tar.xz"
+sha256 = "bc10c6c217d6580e2cb2670fd5c65af3f3bbe443e9e5c6df594db3747decfce0"
+
+[kage.versions."v0.5.0".aarch64]
+url = "https://github.com/QaidVoid/kage/releases/download/v0.5.0/kage-aarch64-linux.tar.xz"
+sha256 = "6a93d2bf0a8036bc7c3d0c99c337d34ac0570d39529f008f995bf560aeb9a78b"
+
+[errand]
+latest = "v0.3.1"
+
+[errand.versions."v0.3.1".x86_64]
+url = "https://github.com/QaidVoid/errand/releases/download/v0.3.1/errand-0.3.1-x86_64-unknown-linux-musl.tar.xz"
+sha256 = "6abbfc297d43f9d456d761549e8b509ee31879721177097352ba1886bced443e"
+
+[errand.versions."v0.3.1".aarch64]
+url = "https://github.com/QaidVoid/errand/releases/download/v0.3.1/errand-0.3.1-aarch64-unknown-linux-musl.tar.xz"
+sha256 = "4234e2969532d1782cd49607b4cdca77b4e48147fab31af2c589a31a1a99d2e1"

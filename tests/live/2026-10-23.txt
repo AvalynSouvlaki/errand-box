@@ -1,0 +1,53 @@
+PASS probe: bailey doctor exit 0: errand-box 0.1.0 (bailey interface; sessions are Incus system containers);kernel:;  landlock: ABI 7 (not used: each session is a whole guest);  user namespaces:
+PASS probe: per-session check (run -- true) exit 0 in 293 ms
+PASS session: session exit 0 in 4273 ms
+PASS session: agent uid 1000
+PASS session: supplementary groups agent,docker include docker (E-29)
+PASS session: workspace readable
+PASS session: a file the agent wrote is owned by errand on the host
+PASS session: network devices other than guest-internal bridges: lo 
+PASS session: no default route: ''
+PASS session: broker reached through the proxy device: broker-ok
+PASS session: direct egress: blocked
+PASS session: file size limit: 2097152
+PASS session: environment file deleted
+PASS session: passed variable arrives
+PASS session: PID 1 is systemd
+PASS session: instance STOPPED after the session
+PASS session: lease cleared
+PASS acp: initialize: result (3.33 s);session/new: result (3.34 s);launcher exit: 0 (4.41 s)
+PASS inside: session exit 0
+PASS inside: docker run: 13.7
+PASS inside: docker build and run: built
+PASS inside: sudo podman run: 13.7
+PASS inside: rootless podman as the agent (E-30): 13.7
+PASS inside: FUSE mount as the agent: fuse-ok fuse.rclone
+PASS inside: CPUs seen: 3, limit 3
+PASS inside: memory seen: 12571 MiB of 16091 MiB on the host (limits.memory 80%)
+PASS quota: 1 GiB under a 5 GiB quota: rc=0
+PASS quota: 6 GiB over a 5 GiB quota is refused: fallocate: fallocate failed: Disk quota exceeded rc=1
+PASS signals: SIGTERM to the launcher's process group: instance STOPPED after 1015 ms
+PASS signals: SIGTERM: lease cleared
+PASS signals: SIGTERM: launcher gone
+PASS signals: SIGKILL to the launcher's process group: instance STOPPED after 1126 ms
+PASS signals: SIGKILL: lease cleared
+PASS signals: SIGKILL: launcher gone
+PASS reap: launcher and watchdog killed: instance still RUNNING, as after a crash
+PASS reap: errand-box reap: instance STOPPED
+PASS maint: maint --once exit 0: fstrim /var/lib/incus/storage-pools/errand-box: /var/lib/incus/storage-pools/errand-box: 5.1 GiB (5510234112 bytes) trimmed
+PASS up: daemons stopped through s6-svscanctl, as a restart loses them
+PASS up: errand-box up exit 0 in 5617 ms
+PASS up: incusd answers
+PASS up: /dev/fuse mode 666 (E-03)
+PASS up: service incusd: up (pid 5155) 5 seconds
+PASS up: service incus-user: up (pid 5221) 4 seconds
+PASS up: service lxcfs: up (pid 5133) 5 seconds
+PASS up: service errand: up (pid 5303) 2 seconds
+PASS up: service errand-box-maint: up (pid 5134) 5 seconds
+PASS up: a second up changes nothing: 0 changed, 12 unchanged, 1 degraded, 0 failed, 0 skipped
+PASS probe: bailey doctor exit 0: errand-box 0.1.0 (bailey interface; sessions are Incus system containers);kernel:;  landlock: ABI 7 (not used: each session is a whole guest);  user namespaces:
+PASS probe: per-session check (run -- true) exit 0 in 483 ms
+PASS errand: service errand: up (pid 5303) 3 seconds
+PASS errand: errand accepts the config setup wrote
+PASS errand: errand's own probe of the bailey shim passed: the backend enforces every configured guarantee
+exit 0

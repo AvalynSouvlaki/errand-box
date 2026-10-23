@@ -1,0 +1,132 @@
+#!/bin/sh
+# A fake `incus` client for errand-box's tests. It keeps instances as
+# directories under $FAKE_INCUS_STATE and logs every call to
+# $FAKE_INCUS_STATE/log, one line per call. It answers only the calls
+# errand-box makes. `exec -T ... -- <launcher> <cmd...>` runs <cmd...> on
+# the test host, with stdin and stdout passed through, so a test can talk to
+# the "agent".
+set -u
+# The shim clears the environment for the session exec, so the state
+# directory defaults to one next to this script.
+st=${FAKE_INCUS_STATE:-$(cd "$(dirname "$0")/.." && pwd)/fake-state}
+mkdir -p "$st/instances"
+printf '%s\n' "$*" >> "$st/log"
+[ "${1:-}" = "--project" ] && shift 2
+
+inst() { printf '%s/instances/%s' "$st" "$1"; }
+
+json_instance() { # name
+  d=$(inst "$1")
+  printf '{"name":"%s","status":"%s","config":{' "$1" "$(cat "$d/status")"
+  sep=""
+  for f in "$d"/config/*; do
+    [ -e "$f" ] || continue
+    printf '%s"%s":"%s"' "$sep" "$(basename "$f")" "$(cat "$f")"
+    sep=","
+  done
+  printf '},"devices":{'
+  sep=""
+  for dev in "$d"/devices/*; do
+    [ -d "$dev" ] || continue
+    printf '%s"%s":{' "$sep" "$(basename "$dev")"
+    s2=""
+    for f in "$dev"/*; do
+      printf '%s"%s":"%s"' "$s2" "$(basename "$f")" "$(cat "$f")"
+      s2=","
+    done
+    printf '}'
+    sep=","
+  done
+  printf '}}'
+}
+
+case ${1:-} in
+  query)
+    path=${2%%\?*}
+    case $path in
+      /1.0) printf '{"environment":{"server_version":"6.0.6-fake"}}\n' ;;
+      /1.0/instances)
+        printf '['
+        sep=""
+        for d in "$st"/instances/*; do
+          [ -d "$d" ] || continue
+          printf '%s' "$sep"
+          json_instance "$(basename "$d")"
+          sep=","
+        done
+        printf ']\n' ;;
+      /1.0/instances/*)
+        n=${path#/1.0/instances/}
+        [ -d "$(inst "$n")" ] || { echo "Error: Instance not found" >&2; exit 1; }
+        json_instance "$n"; echo ;;
+      *) echo "Error: not found" >&2; exit 1 ;;
+    esac ;;
+  copy)
+    [ -d "$(inst "$2")" ] || { echo "Error: source not found" >&2; exit 1; }
+    d=$(inst "$3")
+    mkdir -p "$d/config" "$d/devices" "$d/files"
+    echo Stopped > "$d/status"
+    shift 3
+    while [ $# -gt 0 ]; do
+      [ "$1" = "--config" ] && { k=${2%%=*}; printf '%s' "${2#*=}" > "$d/config/$k"; shift; }
+      shift
+    done ;;
+  start) echo Running > "$(inst "$2")/status" ;;
+  stop)
+    [ -n "${FAKE_INCUS_STOP_DELAY:-}" ] && sleep "$FAKE_INCUS_STOP_DELAY"
+    echo Stopped > "$(inst "$2")/status" ;;
+  delete) rm -rf "$(inst "$3")" ;;
+  config)
+    case $2 in
+      set) d=$(inst "$3"); shift 3; for kv in "$@"; do printf '%s' "${kv#*=}" > "$d/config/${kv%%=*}"; done ;;
+      unset) rm -f "$(inst "$3")/config/$4" ;;
+      device)
+        case $3 in
+          add)
+            dd="$(inst "$4")/devices/$5"
+            mkdir -p "$dd"
+            printf '%s' "$6" > "$dd/type"
+            shift 6
+            for kv in "$@"; do printf '%s' "${kv#*=}" > "$dd/${kv%%=*}"; done ;;
+          remove) rm -rf "$(inst "$4")/devices/$5" ;;
+        esac ;;
+    esac ;;
+  file)
+    # file push - <name><path> --mode M --uid U --gid G
+    target=$4
+    n=${target%%/*}
+    p=/${target#*/}
+    out="$(inst "$n")/files$p"
+    mkdir -p "$(dirname "$out")"
+    cat > "$out"
+    printf '%s %s %s\n' "$6" "$8" "${10}" > "$out.meta" ;;
+  exec)
+    shift
+    interactive=0
+    while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+      case $1 in
+        -T) interactive=1 ;;
+        --user|--group|--cwd|--env) shift ;;
+        *) name=$1 ;;
+      esac
+      shift
+    done
+    shift
+    [ "$(cat "$(inst "$name")/status")" = Running ] || { echo "Error: Instance is not running" >&2; exit 1; }
+    if [ $interactive = 1 ]; then
+      shift 3 # the launcher, the uid and the gid
+      # An asynchronous command gets /dev/null as stdin; pass the real one
+      # through descriptor 3.
+      exec 3<&0
+      "$@" <&3 3<&- &
+      child=$!
+      trap 'kill -TERM $child 2>/dev/null' TERM INT
+      wait $child
+      rc=$?
+      # wait returns early when a trapped signal arrives; wait again.
+      kill -0 $child 2>/dev/null && { wait $child; rc=$?; }
+      exit $rc
+    fi
+    "$@" ;;
+  *) echo "fake-incus: unsupported call: $*" >&2; exit 3 ;;
+esac

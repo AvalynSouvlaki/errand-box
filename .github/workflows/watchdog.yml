@@ -1,0 +1,56 @@
+# Every day: is each upstream that `errand-box setup` reads still there?
+# scripts/watch-upstreams.sh does the checks and runs the same way by hand.
+#
+# One issue per check that fails, `upstream-<check>`, kept current while it
+# fails and closed when it passes again. The run stays red while a check
+# fails.
+name: watchdog
+
+on:
+  schedule:
+    - cron: '43 5 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+
+jobs:
+  upstreams:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: check every upstream
+        run: sh scripts/watch-upstreams.sh "$RUNNER_TEMP/upstreams"
+      - name: raise or clear upstream-<check>
+        if: ${{ always() && github.ref == 'refs/heads/main' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          rc=0
+          for check in zabbly-stable zabbly-lts-6.0 images pins; do
+            f="$RUNNER_TEMP/upstreams/$check.md"
+            if [ -f "$f" ]; then
+              sh scripts/track-issue.sh raise "upstream-$check" "upstream: $check is gone" "$f" || rc=1
+            else
+              sh scripts/track-issue.sh clear "upstream-$check" "$check answers again: $RUN_URL" || rc=1
+            fi
+          done
+          exit "$rc"
+      # GitHub turns off the schedule of a workflow in a repository with no
+      # activity for 60 days. Each scheduled workflow turns the other back on.
+      - name: keep freshness scheduled
+        if: ${{ always() && github.ref == 'refs/heads/main' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow enable freshness.yml

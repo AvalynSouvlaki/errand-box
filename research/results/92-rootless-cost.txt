@@ -1,0 +1,13 @@
+workload@dir                   runc            incus           rincus   (median ms of 5 interleaved rounds)
+spawn@workspace          423 (1.0x)       416 (1.0x)       434 (1.0x)
+files@workspace         1213 (1.0x)      1263 (1.0x)       952 (0.8x)
+git@workspace           1080 (1.0x)      1043 (1.0x)       680 (0.6x)
+cpu@workspace            363 (1.0x)       335 (0.9x)       331 (0.9x)
+compile@workspace       1734 (1.0x)      1696 (1.0x)      1646 (0.9x)
+spawn@scratch            437 (1.0x)       424 (1.0x)       426 (1.0x)
+files@scratch            112 (1.0x)       118 (1.1x)       113 (1.0x)
+git@scratch              115 (1.0x)       122 (1.1x)       125 (1.1x)
+cpu@scratch              322 (1.0x)       310 (1.0x)       319 (1.0x)
+compile@scratch         1320 (1.0x)      1263 (1.0x)      1226 (0.9x)
+conditions: host=Linux 6.18.44-fc-v153 x86_64 cpus=4 cgroup=v1 (rl: delegated subtree /rl) kvm=no incus=6.0.6 root-pool=btrfs rootless-pool=dir runs=5 date=2026-10-23T06:16:40Z
+rc=0

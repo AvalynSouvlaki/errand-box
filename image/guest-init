@@ -1,0 +1,27 @@
+#!/bin/sh
+# errand-box guest boot step, installed at
+# /usr/local/libexec/errand-box/guest-init and run once per boot by
+# errand-box-guest.service, before Docker and podman start.
+# - Adds errand's broker address to lo. The host's proxy devices listen on
+#   0.0.0.0 inside the guest, so a connection to that address reaches errand's
+#   broker on the host.
+# - On a cgroup v1 host, podman cannot create cgroups inside an unprivileged
+#   container, so podman runs with cgroups disabled (edge case E-04).
+set -u
+ip addr add 169.254.169.1/32 dev lo 2>/dev/null || true
+conf=/etc/containers/containers.conf.d/50-errand-box-cgroup-v1.conf
+if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+  rm -f "$conf"
+else
+  mkdir -p /etc/containers/containers.conf.d
+  cat > "$conf" <<'EOF'
+# Written by errand-box guest-init: this host runs cgroup v1, where an
+# unprivileged container cannot create cgroups for podman.
+[containers]
+cgroups = "disabled"
+[engine]
+cgroup_manager = "cgroupfs"
+events_logger = "file"
+EOF
+fi
+exit 0

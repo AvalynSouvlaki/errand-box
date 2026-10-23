@@ -1,0 +1,82 @@
+# Open a pull request for each newer upstream: errand, kage (pins.toml) and
+# stable Rust (rust-toolchain.toml). scripts/freshness.sh does the work and
+# runs the same way by hand; read its header.
+#
+# Each update is one branch, freshness/<tool>-<version>, and one pull
+# request. A branch that exists is left alone. A failed run raises the issue
+# `freshness`, and a later good run closes it.
+#
+# Needs the repository setting "Allow GitHub Actions to create and approve
+# pull requests". A pull request opened with the workflow token starts no
+# workflow; with the secret FRESHNESS_TOKEN set, the pull request is opened
+# with it and CI runs on it. SECURITY.md lists the permissions.
+name: freshness
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Only print what is out of date
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: freshness
+  cancel-in-progress: false
+
+jobs:
+  freshness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.FRESHNESS_TOKEN || github.token }}
+      # The bot's own identity. Its address is built from its account id, so
+      # no address is written in this file.
+      - name: commit identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          id=$(gh api 'users/github-actions%5Bbot%5D' --jq .id)
+          git config user.name 'github-actions[bot]'
+          git config user.email "$id+github-actions[bot]@users.noreply.github.com"
+      - name: open a pull request for each newer upstream
+        env:
+          GH_TOKEN: ${{ secrets.FRESHNESS_TOKEN || github.token }}
+        run: |
+          if [ "${{ inputs.dry_run }}" = true ]; then
+            sh scripts/freshness.sh --dry-run
+          else
+            sh scripts/freshness.sh
+          fi
+      - name: raise or clear the issue
+        if: ${{ always() && github.ref == 'refs/heads/main' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          OUTCOME: ${{ job.status }}
+        run: |
+          if [ "$OUTCOME" = success ]; then
+            sh scripts/track-issue.sh clear freshness "The freshness run passed again: $RUN_URL"
+          else
+            printf 'The weekly freshness run failed: %s\n\nRun "sh scripts/freshness.sh --dry-run" on a checkout to see which update failed.\n' "$RUN_URL" > "$RUNNER_TEMP/body.md"
+            sh scripts/track-issue.sh raise freshness "freshness: an upstream update failed" "$RUNNER_TEMP/body.md"
+          fi
+      # GitHub turns off the schedule of a workflow in a repository with no
+      # activity for 60 days. Each scheduled workflow turns the other back on.
+      - name: keep the watchdog scheduled
+        if: ${{ always() && github.ref == 'refs/heads/main' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow enable watchdog.yml

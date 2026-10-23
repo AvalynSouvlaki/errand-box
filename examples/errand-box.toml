@@ -1,0 +1,39 @@
+# errand-box configuration. Every key is optional; the values below are the
+# defaults. Copy this file, change what you need, and pass it to
+# `errand-box setup --config`.
+
+[engine]
+mode = "root"            # root; rootless is measured but not set up yet
+incus = "auto"           # auto, lts-6.0 or stable; auto pins lts-6.0 on cgroup v1
+pool = "errand-box"      # the storage pool sessions live on
+pool_driver = "btrfs"    # btrfs, zfs or dir (dir does not enforce box.disk)
+pool_size = "auto"       # auto: half the free space, at least 20GiB
+
+[box]
+disk = "20GiB"           # root disk quota of each session instance (at least 4GiB)
+memory = "80%"           # a size, or a percentage of the host's memory
+cpus = "80%"             # a count, or a percentage of the host's CPUs
+keep_days = 14           # gc deletes stopped instances unused this long
+stop_seconds = 4         # clean stop before a forced one; keep below errand's grace
+
+[errand]
+user = "errand"
+home = "/var/lib/errand" # errand's projects and state live under it
+version = "latest"       # latest pinned in pins.toml, or e.g. v0.3.1
+
+[kage]
+version = "latest"
+
+[image]
+alias = "errand-box/debian-13"
+source = "build"
+registry_mirror = "https://mirror.gcr.io"   # Docker Hub mirror inside guests; "" for none
+
+[network]
+proxy = "auto"           # auto (from HTTPS_PROXY), none, or a URL
+proxy_ca = ""            # the proxy's CA file, if it re-signs TLS
+guest_proxy_port = 3128  # where Docker and apt in a guest reach errand's broker
+
+[maintenance]
+fstrim_hours = 24
+reap_seconds = 60

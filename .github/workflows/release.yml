@@ -1,0 +1,76 @@
+# A release: push a tag vX.Y.Z whose version is Cargo.toml's. This builds the
+# static binary on each architecture through scripts/ci-local.sh (the same
+# step a session runs), writes SHA256SUMS, and publishes the GitHub release
+# that bootstrap.sh reads:
+#   errand-box-x86_64-linux-musl, errand-box-aarch64-linux-musl, SHA256SUMS
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: the tag is Cargo.toml's version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          [ "v$v" = "$TAG" ] || { echo "tag $TAG, Cargo.toml $v"; exit 1; }
+      - name: build and run the static binary
+        run: sh scripts/ci-local.sh --step musl
+      - name: name the asset
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.arch }}-unknown-linux-musl/release/errand-box" "dist/errand-box-${{ matrix.arch }}-linux-musl"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: errand-box-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+      - name: SHA256SUMS
+        working-directory: dist
+        run: |
+          sha256sum errand-box-*-linux-musl > SHA256SUMS
+          cat SHA256SUMS
+      - name: publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --verify-tag \
+            --notes "Static binaries for x86_64 and aarch64 Linux, and their SHA-256 digests. Install with bootstrap.sh; see docs/operations.md." \
+            dist/errand-box-x86_64-linux-musl dist/errand-box-aarch64-linux-musl dist/SHA256SUMS
