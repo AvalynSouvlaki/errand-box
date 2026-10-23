@@ -36,7 +36,7 @@ The build host: Ubuntu 24.04 in a hosted container, kernel 6.18, x86_64, 4
 CPUs, 16 GiB, cgroup v1, no init, no KVM, egress through an HTTP proxy;
 Incus 6.0.6 from Zabbly, errand v0.3.1, kage v0.5.0.
 
-**18 entries: 7 done, 2 partial, 1 blocked, 8 open.**
+**19 entries: 7 done, 2 partial, 2 blocked, 8 open.**
 
 ---
 
@@ -55,6 +55,9 @@ Incus 6.0.6 from Zabbly, errand v0.3.1, kage v0.5.0.
   workflows, and the local CI runner. Closed T-001 to T-006 and T-008.
 - Compared it with sandhome, by running sandhome inside a session
   ([`docs/research/sandhome.md`](../docs/research/sandhome.md)).
+- Wrote [`docs/incus-backend.md`](../docs/incus-backend.md), a specification
+  of an `incus` backend in errand, for errand's author; entry T-019, blocked
+  on that author.
 - Moved the toolchain to Rust 1.99.1, which `scripts/freshness.sh
   --dry-run` reported as newer than the pinned 1.99.0.
 

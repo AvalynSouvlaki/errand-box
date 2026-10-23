@@ -218,3 +218,61 @@ grep -c "confined host processes" /var/log/errand-box/errand/current
 ```
 
 0 after the change.
+
+---
+
+# T-019: An incus backend in errand
+
+**Source:** the operator, 2026-10-23; the specification is
+[docs/incus-backend.md](../docs/incus-backend.md)
+**Category:** sandbox
+**Priority:** P2
+**Effort:** L
+**Status:** blocked
+
+## Problem
+
+errand reaches Incus only through errand-box's stand-in for `bailey`. That
+costs a policy file round trip, a digest check on a file the guest can
+write, doctor lines written for Landlock, and one limit for every session,
+because errand's bailey policy carries no memory, CPU or process limit.
+errand then describes the sandbox with bailey's words, which are wrong here
+(T-016).
+
+## Premise
+
+Read, at errand v0.3.1: errand's `Backend` has `probe`, `launch`,
+`list_orphans` and `remove_orphans`, and the podman backend implements them
+with a child process and labels (`src/sandbox/mod.rs`,
+`src/sandbox/podman.rs`). An `incus` backend fits the same shape. Measured:
+each behaviour the specification asks for runs in errand-box and passed its
+live tests (`tests/live/2026-10-23.txt`).
+
+## Approach
+
+The work is in errand, which this repository does not change.
+[docs/incus-backend.md](../docs/incus-backend.md) specifies the backend:
+configuration, the instance, the guest image, the lifecycle, the settings,
+the host prerequisites, and the acceptance tests. When errand ships it,
+errand-box keeps `setup`, `up` and `maint`, writes `sandbox.backend =
+"incus"` into errand's config, and stops installing the `bailey` link for
+that errand version and later.
+
+## Decision
+
+D1 to D4 in section 10 of the specification are errand's author's.
+
+## Blocker
+
+errand's author: whether errand takes an `incus` backend, and the decisions
+D1 to D4. Unblock: an errand release with the backend, or a ruling against
+it, in which case this entry records the ruling and errand-box keeps the
+stand-in.
+
+## Prove
+
+```sh
+sh tests/live/live.sh   # with sandbox.backend = "incus" and no `bailey` on errand's PATH
+```
+
+Every check PASS.

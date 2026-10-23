@@ -37,6 +37,7 @@ authority. To read a row is not to read the rule.
 | Work on an open entry | the entry in `TODO/`, [`docs/methodology/gate.md`](docs/methodology/gate.md), [`docs/conventions/code.md`](docs/conventions/code.md), [`docs/conventions/forbidden-patterns.md`](docs/conventions/forbidden-patterns.md) |
 | Write a new entry | [`docs/methodology/authoring.md`](docs/methodology/authoring.md), [`docs/methodology/work-todo.md`](docs/methodology/work-todo.md). Do not implement it in the same step. |
 | Change the shim (`src/shim.rs`, `src/session.rs`, `src/trust.rs`) | [`docs/bailey-contract.md`](docs/bailey-contract.md), then [`docs/design.md`](docs/design.md) |
+| A native Incus backend in errand | [`docs/incus-backend.md`](docs/incus-backend.md), entry T-019 |
 | Change setup, `up` or the supervisor | [`docs/operations.md`](docs/operations.md), [`docs/edge-cases.md`](docs/edge-cases.md) |
 | Change the guest image (`image/`) | [`docs/design.md`](docs/design.md) section "The guest image", then [`docs/edge-cases.md`](docs/edge-cases.md). A changed file there rebuilds every host's image (E-31). |
 | A host problem: something fails on one machine | [`docs/edge-cases.md`](docs/edge-cases.md). Each new condition gets a row, a fallback and a test. |

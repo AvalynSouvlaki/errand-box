@@ -51,21 +51,22 @@ measurement backs yet; a host type is P1 rather than P0 because the code
 paths exist and the failure, if any, is at setup, before errand runs.
 
 P2 and P3 make errand-box cheaper or clearer: rootless setup, a published
-image, a pool size that fits the disk, errand's wording, a docs check.
+image, a pool size that fits the disk, errand's wording, a docs check, and a
+native Incus backend in errand, which waits on errand's author.
 
 ---
 
 ## Counts
 
-**18 items. 8 open, 2 partial, 1 blocked, 7 done.**
+**19 items. 8 open, 2 partial, 2 blocked, 7 done.**
 
 | priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 3 | 3 |
 | P1 | 3 | 1 | 1 | 3 | 8 |
-| P2 | 3 | 1 | 0 | 1 | 5 |
+| P2 | 3 | 1 | 1 | 1 | 6 |
 | P3 | 2 | 0 | 0 | 0 | 2 |
-| **All** | 8 | 2 | 1 | 7 | 18 |
+| **All** | 8 | 2 | 2 | 7 | 19 |
 
 ---
 
@@ -91,3 +92,4 @@ image, a pool size that fits the disk, errand's wording, a docs check.
 | [T-016](sandbox.md) | P3 | sandbox | open | errand's description of this backend is partly wrong |
 | [T-017](upkeep.md) | P3 | upkeep | open | A documentation check: every command, key and path a page names exists |
 | [T-018](setup.md) | P2 | setup | partial | Choose a pool size that fits the host disk |
+| [T-019](sandbox.md) | P2 | sandbox | blocked | An incus backend in errand |

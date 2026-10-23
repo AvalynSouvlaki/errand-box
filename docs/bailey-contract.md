@@ -83,7 +83,8 @@ errand v0.3.1 (`src/sandbox/podman.rs`):
   true.
 
 So errand-box implements bailey, and errand's config keeps `sandbox.backend
-= "bailey"`.
+= "bailey"`. [incus-backend.md](incus-backend.md) specifies the backend
+errand would need to drive Incus itself.
 
 ## 2. How each call is run
 
