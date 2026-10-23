@@ -359,3 +359,59 @@ host-disk use, degraded at 85 % and failed at 95 %.
 cargo test --locked setup
 errand-box status
 ```
+
+---
+
+# T-023: Observability: metrics over time, and session traces
+
+**Source:** the operator, 2026-10-23: "best-in-class observability/tracing
+logs ... beyond errand/kage, something like system-info-collector"
+**Category:** setup
+**Priority:** P2
+**Effort:** L
+**Status:** open
+
+## Problem
+
+errand-box has operational logging and a point-in-time snapshot, nothing
+over time. It ships: bounded per-daemon s6 logs
+(`/var/log/errand-box/<daemon>/current`, `src/supervise.rs`), `errand-box
+logs` (`src/ops.rs`), journald for the units on systemd, and `errand-box
+status` (daemons, pool %, host-disk %, image, golden, session counts,
+`src/status.rs`). A grep of `src/` for `metric|telemetry|tracing|otel|
+prometheus|statsd|/proc/stat|cgroup.*stat` returns nothing: no time series,
+no per-session resource accounting, no tracing, no export. An operator
+cannot answer "what did this session use, and when" or "what was the pool
+doing an hour ago."
+
+## Premise
+
+READ, not yet built: each session is a cgroup-delegated Incus instance, so
+per-session CPU, memory, pids and io are readable from `/sys/fs/cgroup` and
+the Incus API without errand's help, and `maint` already runs on a loop
+(`src/maint.rs`) that could sample. The host daemons' state is already
+computed by `status`.
+
+## Approach
+
+A sampler (in `maint`, or its own supervised service) writes a bounded
+time series of host and per-session resource use - the shape
+[system-info-collector](https://github.com/qarmin/system-info-collector)
+takes, CSV or a small on-disk store, not a daemon to operate - and a
+read command renders or exports it (`errand-box status --watch`, or an
+export for a TSDB the operator already runs). Session lifecycle events
+(start, stop, reap, gc, image rebuild) become structured records a trace can
+be built from. Decide the retention and the on-disk budget the way the logs
+are bounded (E-08-style: never fill the disk).
+
+Safety: the sampler records resource numbers and lifecycle events, never the
+contents of a session, its environment or its files; a trace must not become
+a place secrets land (T-021).
+
+## Prove
+
+```sh
+# after some session activity, the series shows per-session CPU and memory
+# over time and the lifecycle events, bounded on disk, with no secret in it
+errand-box status --watch   # or the chosen read/export path
+```

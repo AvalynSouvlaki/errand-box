@@ -38,7 +38,7 @@ The build host: Ubuntu 24.04 in a hosted container, kernel 6.18, x86_64, 4
 CPUs, 16 GiB, cgroup v1, no init, no KVM, egress through an HTTP proxy;
 Incus 6.0.6 from Zabbly, errand v0.3.1, kage v0.5.0.
 
-**20 entries: 9 done, 4 partial, 2 blocked, 5 open.**
+**23 entries: 9 done, 4 partial, 2 blocked, 8 open.**
 
 ---
 
@@ -82,6 +82,11 @@ QOL commands and the record:
 
 Closed T-011 and T-018; T-012, T-013 and T-014 to partial, each entry
 naming its open half; E-34 to E-65 in [edge-cases.md](../docs/edge-cases.md).
+Filed, from the operator's questions, T-021 (operator-chosen session
+credentials), T-022 (egress a session can use beyond the HTTP broker) and
+T-023 (observability: metrics over time and session traces); the first two
+are to be resolved together, as the best compromise between safety and
+usability.
 
 Premises that a measurement disproved:
 
@@ -113,7 +118,10 @@ open half.
    publish it with its digest in `pins.toml` (waits on Actions, T-009).
 4. T-015, `TODO/sandbox.md`: when the operator has given the chat and
    gateway credentials, a real session.
-5. T-012 and T-013, `TODO/setup.md`: a real Alpine host and WSL2 (the full
+5. T-021 and T-022, `TODO/sandbox.md`: resolve operator-chosen credentials
+   and the egress to use them (the ssh-to-another-machine case) together.
+6. T-023, `TODO/setup.md`: the observability sampler and session traces.
+7. T-012 and T-013, `TODO/setup.md`: a real Alpine host and WSL2 (the full
    live suite), and an aarch64 host.
 
 ---

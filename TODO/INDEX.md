@@ -58,15 +58,15 @@ native Incus backend in errand, which waits on errand's author.
 
 ## Counts
 
-**20 items. 5 open, 4 partial, 2 blocked, 9 done.**
+**23 items. 8 open, 4 partial, 2 blocked, 9 done.**
 
 | priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 3 | 3 |
 | P1 | 2 | 2 | 1 | 4 | 9 |
-| P2 | 1 | 2 | 1 | 2 | 6 |
+| P2 | 4 | 2 | 1 | 2 | 9 |
 | P3 | 2 | 0 | 0 | 0 | 2 |
-| **All** | 5 | 4 | 2 | 9 | 20 |
+| **All** | 8 | 4 | 2 | 9 | 23 |
 
 ---
 
@@ -94,3 +94,6 @@ native Incus backend in errand, which waits on errand's author.
 | [T-018](setup.md) | P2 | setup | done | Choose a pool size that fits the host disk |
 | [T-019](sandbox.md) | P2 | sandbox | blocked | An incus backend in errand |
 | [T-020](sandbox.md) | P1 | sandbox | open | A broker link that does not need proxy devices |
+| [T-021](sandbox.md) | P2 | sandbox | open | Operator-chosen session credentials, safely |
+| [T-022](sandbox.md) | P2 | sandbox | open | Egress a session can use beyond the HTTP broker |
+| [T-023](setup.md) | P2 | setup | open | Observability: metrics over time, and session traces |

@@ -332,3 +332,106 @@ image changes, so every host rebuilds it (E-31).
 sh tests/live/live.sh   # the broker and system-proxy checks pass with proxy devices blocked
 incus project get user-UID restricted.devices.proxy   # block
 ```
+
+---
+
+# T-021: Operator-chosen session credentials, safely
+
+**Source:** the operator, 2026-10-23: "I want agents to use any [credential]
+I choose via env vars, for instance an ssh key the agent can use to ssh into
+another machine"
+**Category:** sandbox
+**Priority:** P2
+**Effort:** M
+**Status:** open
+
+## Problem
+
+What reaches the agent is entirely errand's per-session policy, which
+errand-box trust-verifies (`src/shim.rs:262`) and then relays faithfully:
+`[env] pass` names are read from bailey's own environment
+(`src/shim.rs:283`, `src/policy.rs:409`) and `set` is applied verbatim, into
+a 0600 file the launcher sources and deletes (`src/session.rs:390`). Two
+consequences: errand's defaults flow through unfiltered (the GitHub token
+reaches the guest verbatim, `docs/design.md:76`), and the operator has no
+errand-box-side way to add a credential errand's policy does not already
+grant. errand-box cannot simply bolt extra env or mounts on top, because the
+policy is a trusted artifact signed as errand's; doing so silently would
+break that trust.
+
+## Approach: research and resolve the best compromise between safety and usability
+
+The task is to find where operator-chosen secrets belong without weakening
+the trust model. Options to measure and compare, not to assume:
+- An errand-box overlay the operator signs, merged with errand's policy
+  under its own trust record, so the agent's environment and mounts are the
+  union and the provenance of each is auditable.
+- A secrets directory (e.g. `/etc/errand-box/secrets/`, mode 0700) whose
+  files errand-box mounts read-only into the session at operator-named
+  guest paths (an ssh key at `/state/home/.ssh/id_ed25519`, 0600), named in
+  the host config rather than in errand's per-session policy.
+- Deciding what, if anything, errand-box should redact or refuse to relay
+  from errand's defaults (the verbatim git token), versus leaving that to
+  errand.
+
+Each option is a point on the safety/usability line; the entry resolves to
+the one that lets the operator add arbitrary credentials while keeping every
+grant verifiable and least-privilege. An ssh key is the worked example: it
+is useless without T-022, so the two are resolved together.
+
+## Prove
+
+```sh
+# the chosen mechanism puts an operator secret in a session, 0600, not in
+# any argv or log, and absent from a session the operator did not grant it to
+sh tests/live/live.sh
+```
+
+---
+
+# T-022: Egress a session can use beyond the HTTP broker
+
+**Source:** the operator, 2026-10-23: the ssh-into-another-machine case
+**Category:** sandbox
+**Priority:** P2
+**Effort:** M
+**Status:** open
+
+## Problem
+
+A session has no network device; its only path out is the two proxy devices
+to errand's broker at `169.254.169.1:P`, under errand's host-and-port
+allowlist (`src/session.rs` `desired_devices`, `docs/design.md:73`, measured:
+a direct connection fails with errno 101). The guest's clients are pointed
+at it as an HTTP proxy (`HTTPS_PROXY` in the policy `set`). Raw-TCP protocols
+the agent may legitimately need - ssh to a machine it is diagnosing, a
+database connection, a git+ssh remote - have no path: ssh is TCP/22, not
+HTTP, and whether the broker tunnels it is errand's to decide, not
+errand-box's.
+
+## Approach: research and resolve the best compromise between safety and usability
+
+Measure what each egress shape costs in containment and buys in usability,
+rather than opening the network:
+- A per-session allowlist of raw-TCP host:port the broker (or an errand-box
+  relay beside it) tunnels, so ssh to a named host works and nothing else
+  does. This is largely errand's broker; errand-box's part is the transport
+  and the allowlist plumbing.
+- An operator-opt-in egress profile per session (still no general NIC) that
+  errand-box carries into the policy errand already shapes with
+  `sandbox.network` and `--proxy-net` (`docs/bailey-contract.md:268-272`).
+- Keeping the default exactly as it is (HTTP allowlist only), so broader
+  egress is never silent.
+
+The entry resolves to the narrowest mechanism that makes the operator's
+named outbound connection work while every other destination still fails
+closed. It is resolved with T-021 (the credential is useless without the
+path, and the path is dangerous without a scoped credential).
+
+## Prove
+
+```sh
+# with an operator-granted ssh target, the agent reaches host:22 and no other
+# host; every ungranted raw-TCP connection still fails
+sh tests/live/live.sh
+```
