@@ -2,9 +2,10 @@
 # Turns a Debian 13 system container into the errand-box guest image.
 # `errand-box image build` pushes this file and its inputs to /run/eb-build
 # in a fresh images:debian/13 instance and runs it as root there. It also
-# runs unchanged in a distrobuilder build, from the same directory layout.
+# runs unchanged in a distrobuilder build, from /opt/eb-build, because
+# distrobuilder mounts a fresh tmpfs on /run while an action runs.
 #
-# Inputs, in /run/eb-build:
+# Inputs, in the directory that holds this file:
 #   launch, guest-init   the files of this directory
 #   kage.tar.xz          the kage release archive, digest already checked
 #   proxy-ca.crt         optional: the CA of the host's egress proxy
@@ -14,7 +15,7 @@
 #   EB_GUEST_PROXY_PORT  port where guest services reach the broker (3128)
 # Exit: 0 built, 1 a step failed.
 set -eu
-in=/run/eb-build
+in=$(cd "$(dirname "$0")" && pwd)
 port=${EB_GUEST_PROXY_PORT:-3128}
 say() { printf 'provision: %s\n' "$*"; }
 fail() { printf 'provision: FAILED: %s\n' "$*" >&2; exit 1; }
@@ -28,7 +29,16 @@ if [ -n "${EB_PROXY:-}" ]; then
   {
     printf 'Acquire::https::Proxy "%s";\n' "$EB_PROXY"
     printf 'Acquire::http::Proxy "%s";\n' "$EB_PROXY"
-    [ -f "$in/proxy-ca.crt" ] && printf 'Acquire::https::CaInfo "%s/proxy-ca.crt";\n' "$in"
+    if [ -f "$in/proxy-ca.crt" ]; then
+      # The proxy's CA joins the public roots instead of replacing them: a
+      # proxy that passes some connections through without re-signing them
+      # would otherwise fail those (E-38).
+      {
+        [ -f /etc/ssl/certs/ca-certificates.crt ] && cat /etc/ssl/certs/ca-certificates.crt
+        cat "$in/proxy-ca.crt"
+      } > "$in/ca-bundle.crt"
+      printf 'Acquire::https::CaInfo "%s/ca-bundle.crt";\n' "$in"
+    fi
   } > "$build_conf"
 fi
 

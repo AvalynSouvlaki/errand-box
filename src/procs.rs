@@ -65,6 +65,15 @@ pub fn lock(path: &Path, wait: bool) -> Result<Lock, String> {
         .write(true)
         .open(path)
         .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+    // root and the errand account share lock files (session::lock_path): a
+    // file root creates goes to the directory's owner, or the account could
+    // not open it again.
+    if let Some(md) = path.parent().and_then(|d| std::fs::metadata(d).ok()) {
+        use std::os::unix::fs::MetadataExt;
+        if crate::paths::euid() == 0 && md.uid() != 0 {
+            let _ = std::os::unix::fs::fchown(&f, Some(md.uid()), Some(md.gid()));
+        }
+    }
     let op = if wait {
         libc::LOCK_EX
     } else {
@@ -155,6 +164,27 @@ pub fn account(name: &str) -> Option<(u32, u32, String)> {
             .to_string_lossy()
             .into_owned();
         Some((pwd.pw_uid, pwd.pw_gid, home))
+    }
+}
+
+/// True when the group database has `name`.
+pub fn group_exists(name: &str) -> bool {
+    let Ok(cname) = std::ffi::CString::new(name) else {
+        return false;
+    };
+    // SAFETY: getgrnam_r writes into buffers we own; read only on success.
+    unsafe {
+        let mut grp: libc::group = std::mem::zeroed();
+        let mut buf = vec![0 as libc::c_char; 65536];
+        let mut result: *mut libc::group = std::ptr::null_mut();
+        let rc = libc::getgrnam_r(
+            cname.as_ptr(),
+            &mut grp,
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut result,
+        );
+        rc == 0 && !result.is_null()
     }
 }
 

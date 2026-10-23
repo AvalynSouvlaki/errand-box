@@ -52,7 +52,10 @@ pub fn instance_name(id: &str) -> String {
         clean.push(c);
     }
     let clean = clean.trim_matches('-').to_owned();
-    if !clean.is_empty() && clean == id && clean.len() <= 50 {
+    // `eb-golden` and `eb-golden-next` are setup's (E-43); a session id that
+    // would land on them gets the digest form.
+    let reserved = clean == "golden" || clean.starts_with("golden-");
+    if !clean.is_empty() && clean == id && clean.len() <= 50 && !reserved {
         return format!("{PREFIX}{clean}");
     }
     let digest = &crate::sha256::digest_hex(id.as_bytes())[..10];
@@ -213,10 +216,17 @@ pub fn env_script(env: &BTreeMap<String, String>, fsize: Option<u64>) -> String 
     s
 }
 
-fn lock_path(name: &str) -> PathBuf {
-    paths::state_dir()
-        .join("locks")
-        .join(format!("{name}.lock"))
+/// The lock a launcher holds for its instance. The launcher, its watchdog
+/// and root's `reap` lock the same file (runtime.toml `lock_dir`); a file
+/// under the caller's own state directory would differ between root and
+/// the errand account, and lock nothing.
+pub fn lock_path(rt: &Runtime, name: &str) -> PathBuf {
+    let dir = if rt.lock_dir.is_empty() {
+        paths::state_dir().join("locks")
+    } else {
+        PathBuf::from(&rt.lock_dir)
+    };
+    dir.join(format!("{name}.lock"))
 }
 
 fn say(quiet: bool, msg: &str) {
@@ -306,7 +316,7 @@ fn run_inner(
     let inc = Incus::new(rt.endpoint(), runner);
     let id = policy.session_id()?;
     let name = instance_name(&id);
-    let _lock = procs::lock(&lock_path(&name), false)?;
+    let _lock = procs::lock(&lock_path(rt, &name), false)?;
 
     let relay = match (rt.broker_link.as_str(), broker) {
         ("unix", Some(port)) => {
@@ -321,12 +331,26 @@ fn run_inner(
         _ => None,
     };
 
-    let inst = prepare(&inc, rt, policy, broker, relay.as_deref())?;
-    if let Some(lease) = inst.config.get(LEASE_KEY)
-        && inst.running()
-        && procs::lease_alive(lease)
-    {
-        return Err(format!("{name} is already running for launcher {lease}"));
+    let mut inst = prepare(&inc, rt, policy, broker, relay.as_deref())?;
+    if inst.running() {
+        match inst.config.get(LEASE_KEY) {
+            Some(lease) if procs::lease_alive(lease) => {
+                return Err(format!("{name} is already running for launcher {lease}"));
+            }
+            _ => {
+                // Running with no live launcher: stop it so this run starts
+                // from a clean guest, not one that carries the dead
+                // session's processes (E-56). run_agent then starts it.
+                say(
+                    quiet,
+                    &format!("{name} was left running without a launcher; restarting it clean"),
+                );
+                inc.stop(&name, rt.stop_seconds)?;
+                inst = inc
+                    .instance(&name)?
+                    .ok_or_else(|| format!("{name} disappeared"))?;
+            }
+        }
     }
     let lease = procs::self_lease();
     inc.config_set(&name, &[(LEASE_KEY.to_owned(), lease.clone())])?;
@@ -485,7 +509,7 @@ pub fn watchdog(rt: &Runtime, runner: &dyn Runner, name: &str, lease: &str) -> i
     }
     // The launcher has ended. If it ended cleanly it holds no lock now and
     // has removed its lease.
-    let _lock = procs::lock(&lock_path(name), true);
+    let _lock = procs::lock(&lock_path(rt, name), true);
     let inc = Incus::new(rt.endpoint(), runner);
     if let Ok(Some(inst)) = inc.instance(name)
         && inst.config.get(LEASE_KEY).map(String::as_str) == Some(lease)
@@ -511,13 +535,20 @@ pub fn reap(rt: &Runtime, runner: &dyn Runner, out: &mut dyn Write) -> Result<us
         if alive {
             continue;
         }
-        let Ok(_lock) = procs::lock(&lock_path(&inst.name), false) else {
+        let Ok(_lock) = procs::lock(&lock_path(rt, &inst.name), false) else {
             continue;
         };
         let _ = writeln!(out, "stopping {}: its launcher is gone", inst.name);
-        inc.stop(&inst.name, rt.stop_seconds)?;
-        let _ = inc.config_unset(&inst.name, LEASE_KEY);
-        n += 1;
+        // One instance that will not stop must not stop the whole pass (E-57).
+        match inc.stop(&inst.name, rt.stop_seconds) {
+            Ok(()) => {
+                let _ = inc.config_unset(&inst.name, LEASE_KEY);
+                n += 1;
+            }
+            Err(e) => {
+                let _ = writeln!(out, "could not stop {}: {e}", inst.name);
+            }
+        }
     }
     Ok(n)
 }
@@ -542,6 +573,7 @@ mod tests {
             host_runtime_dirs: vec![],
             admin_project: String::new(),
             state_root: String::new(),
+            lock_dir: String::new(),
         }
     }
 
@@ -554,6 +586,13 @@ mod tests {
         assert!(instance_name(&long).len() <= 63);
         assert!(instance_name("___").starts_with("eb-"));
         assert_ne!(instance_name("A"), instance_name("a"));
+        for id in ["golden", "golden-next", "Golden"] {
+            let n = instance_name(id);
+            assert!(
+                n.starts_with("eb-golden-") && n.len() > "eb-golden-next".len(),
+                "{n}"
+            );
+        }
     }
 
     #[test]

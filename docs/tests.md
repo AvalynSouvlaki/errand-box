@@ -1,6 +1,6 @@
 # Tests
 
-Three kinds, from the cheapest. Each one prints PASS or FAIL per check and
+Four kinds, from the cheapest. Each one prints PASS or FAIL per check and
 exits 0 only when every check passed. Read the exit code unpiped.
 
 | kind | needs | command |
@@ -8,6 +8,7 @@ exits 0 only when every check passed. Read the exit code unpiped.
 | 1. unit and integration tests | cargo | `cargo test --locked` |
 | 2. the local CI steps | cargo, shellcheck, curl, the network for one step | `sh scripts/ci-local.sh` |
 | 3. the live tests | root on a host where `errand-box setup` finished | `sh tests/live/live.sh` |
+| 4. other kinds of host | root on a host where Incus runs | `sh tests/hosts/host.sh NAME IMAGE` |
 
 ## 1. Unit and integration tests
 
@@ -41,6 +42,7 @@ before every push, and say in a pull request that CI did not run.
 | `pins` | `tests/pins-test.sh`: `scripts/pins.sh` against releases on `file://` URLs. A bump writes both digests and moves `latest`; a digest that differs from upstream's `.sha256` changes nothing |
 | `errand-config` | `tests/errand-config-test.sh`: the pinned errand accepts the config errand-box writes. It downloads errand (digest checked) and runs it against the config from `tests/data/`. This step caught `output.postImages`, a key that errand v0.3.1 refuses |
 | `musl` | the static release binary builds for this machine and runs |
+| `cross` | the static binary builds for the other architecture (x86_64 or aarch64) with `rust-lld`, and, where `qemu-<arch>-static` is installed, the unit and integration tests pass there under qemu-user |
 
 ## 3. The live tests
 
@@ -82,8 +84,31 @@ The run after the fixes passed every check, 52 of 52:
 
 ### What the live tests do not cover
 
-- A host with systemd as PID 1, a musl host, WSL2, aarch64: each is an open
-  entry in [`TODO/INDEX.md`](../TODO/INDEX.md).
+- WSL2, and a real aarch64 machine: the `cross` step runs the unit and
+  integration tests for aarch64 under qemu-user, which proves the code, not
+  a host. Each is an open entry in [`TODO/INDEX.md`](../TODO/INDEX.md).
 - errand with a real chat service and a real model gateway. That needs a
   bot token, a channel, a user id, and a gateway key and URL; the operator
   supplies them as described in [`SECURITY.md`](../SECURITY.md).
+
+## 4. Other kinds of host
+
+[`tests/hosts/host.sh`](../tests/hosts/host.sh) makes another kind of host
+as a nested Incus system container: systemd as PID 1 on Ubuntu and Debian,
+OpenRC and musl on Alpine. In it, it installs errand-box through
+`bootstrap.sh` from a release served the way GitHub serves one, runs setup
+twice, runs the live tests, restarts the container, and checks that
+errand-box comes back. The test credentials are not real, so the errand
+daemon crash-loops (T-015); that is the one service the setup checks allow
+to fail.
+
+```sh
+sh tests/hosts/host.sh u2404 ubuntu/24.04
+sh tests/hosts/host.sh deb13 debian/13
+sh tests/hosts/host.sh alpine alpine/3.22
+sh tests/hosts/host.sh u2404 ubuntu/24.04 destroy
+```
+
+A nested host cannot make a loop-file pool, so it uses a `dir` pool and the
+`quota` live test is skipped (E-05). Set `EB_HOSTS_CA` to the proxy's CA
+when the egress proxy intercepts TLS.

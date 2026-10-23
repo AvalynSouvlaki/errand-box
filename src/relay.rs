@@ -91,20 +91,75 @@ pub fn tcp_to_tcp(listen: &str, target: &str) -> io::Result<()> {
 
 /// `host:port` of a proxy URL such as `http://user:pw@127.0.0.1:3128/`.
 pub fn proxy_authority(url: &str) -> Option<String> {
-    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let (scheme, rest) = url.split_once("://").unwrap_or(("http", url));
     let rest = rest.split('/').next()?;
     let rest = rest.rsplit_once('@').map(|(_, h)| h).unwrap_or(rest);
-    if rest.is_empty() || !rest.contains(':') {
-        None
-    } else {
-        Some(rest.to_owned())
+    if rest.is_empty() {
+        return None;
     }
+    // A port-less proxy URL means the scheme's port.
+    let has_port = match rest.strip_prefix('[') {
+        Some(v6) => v6.split_once(']').is_some_and(|(_, p)| p.starts_with(':')),
+        None => rest.contains(':'),
+    };
+    if has_port {
+        Some(rest.to_owned())
+    } else {
+        Some(format!(
+            "{rest}:{}",
+            if scheme.eq_ignore_ascii_case("https") {
+                443
+            } else {
+                80
+            }
+        ))
+    }
+}
+
+/// `url` with its host and port replaced by `authority`; the scheme, any
+/// credentials and the path are kept.
+pub fn with_authority(url: &str, authority: &str) -> String {
+    let (scheme, rest) = url.split_once("://").unwrap_or(("http", url));
+    let (hostpart, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, ""),
+    };
+    let userinfo = hostpart
+        .rsplit_once('@')
+        .map(|(u, _)| format!("{u}@"))
+        .unwrap_or_default();
+    format!("{scheme}://{userinfo}{authority}{path}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    #[test]
+    fn a_relayed_proxy_keeps_its_credentials() {
+        assert_eq!(
+            with_authority("http://u:p@127.0.0.1:3128", "10.25.127.1:40000"),
+            "http://u:p@10.25.127.1:40000"
+        );
+        assert_eq!(
+            with_authority("http://127.0.0.1:3128/", "10.0.0.1:1"),
+            "http://10.0.0.1:1/"
+        );
+        assert_eq!(
+            proxy_authority("http://proxy.example").as_deref(),
+            Some("proxy.example:80")
+        );
+        assert_eq!(
+            proxy_authority("https://proxy.example").as_deref(),
+            Some("proxy.example:443")
+        );
+        assert_eq!(
+            proxy_authority("http://[::1]:3128").as_deref(),
+            Some("[::1]:3128")
+        );
+        assert_eq!(proxy_authority("http://[::1]").as_deref(), Some("[::1]:80"));
+    }
 
     #[test]
     fn authority_from_proxy_urls() {
@@ -120,7 +175,11 @@ mod tests {
             proxy_authority("proxy.example:8080").as_deref(),
             Some("proxy.example:8080")
         );
-        assert_eq!(proxy_authority("http://noport"), None);
+        assert_eq!(
+            proxy_authority("http://noport").as_deref(),
+            Some("noport:80")
+        );
+        assert_eq!(proxy_authority("http://"), None);
     }
 
     #[test]

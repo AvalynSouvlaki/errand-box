@@ -74,7 +74,7 @@ deleted.
 | Host user ids | The guest's root is an unprivileged host id from a range of its own (`security.idmap.isolated`). Only guest uid 1000, the agent, maps to a real host account: the errand account, so files the agent writes in `/workspace` belong to errand. |
 | CPU, memory, disk, processes | Incus limits per instance: `box.memory`, `box.cpus`, and `box.disk` as a btrfs quota. lxcfs makes /proc report them. |
 | Credentials | The provider key stays with errand's broker; the guest gets a nonce. The GitHub token does reach the guest, because errand puts it in the launch environment. |
-| Incus itself | The errand account is in group `incus`, not `incus-admin`. incus-user gives it one restricted project: no privileged containers, no raw LXC keys, disks only under its home, `raw.idmap` only for its own uid and gid. |
+| Incus itself | The errand account is in group `incus`, not `incus-admin`. incus-user gives it one restricted project: no privileged containers, no raw LXC keys, disks only under its home, `raw.idmap` only for its own uid and gid. The project allows proxy devices for the broker link, and Incus cannot limit where one connects, so this does not hold against the errand account itself (E-61, T-020). |
 
 ## Why the session's processes cannot outlive it
 

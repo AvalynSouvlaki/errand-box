@@ -23,7 +23,9 @@ fn now() -> u64 {
 }
 
 /// Instances `gc` deletes: stopped `eb-` instances other than the golden
-/// one, unused for `keep_days`, or whose session directory is gone.
+/// one, unused for `keep_days`, or whose session directory is gone. When
+/// errand's state root itself is missing (a disk not mounted, a moved home),
+/// no session counts as gone: that would delete them all (E-40).
 pub fn stale(
     rt: &Runtime,
     insts: &[crate::incus::Instance],
@@ -32,6 +34,7 @@ pub fn stale(
     exists: &dyn Fn(&str) -> bool,
 ) -> Vec<String> {
     let mut out = Vec::new();
+    let root_ok = !rt.state_root.is_empty() && exists(&rt.state_root);
     for i in insts {
         if i.name == rt.golden || i.running() || !i.name.starts_with(session::PREFIX) {
             continue;
@@ -42,8 +45,8 @@ pub fn stale(
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(0);
         let old = last > 0 && now.saturating_sub(last) > u64::from(keep_days) * 86400;
-        let gone = match (i.config.get(session::SESSION_KEY), rt.state_root.is_empty()) {
-            (Some(id), false) => !exists(&format!("{}/{id}", rt.state_root)),
+        let gone = match (i.config.get(session::SESSION_KEY), root_ok) {
+            (Some(id), true) => !exists(&format!("{}/{id}", rt.state_root)),
             _ => false,
         };
         if old || gone {
@@ -58,17 +61,40 @@ pub fn gc(
     cfg: &Config,
     runner: &dyn Runner,
     out: &mut dyn Write,
+    dry_run: bool,
 ) -> Result<usize, String> {
     let inc = Incus::new(rt.endpoint_for_caller(), runner);
     let insts = inc.instances(session::PREFIX)?;
     let doomed = stale(rt, &insts, cfg.boxes.keep_days, now(), &|p| {
         Path::new(p).exists()
     });
-    for n in &doomed {
-        let _ = writeln!(out, "deleting {n}");
-        inc.delete(n)?;
+    let mut n = 0;
+    for name in &doomed {
+        if dry_run {
+            let _ = writeln!(out, "would delete {name}");
+            n += 1;
+            continue;
+        }
+        // A launcher may have started it since the list was read: take its
+        // lock and look again.
+        let Ok(_lock) = crate::procs::lock(&session::lock_path(rt, name), false) else {
+            let _ = writeln!(out, "skipping {name}: a launcher holds it");
+            continue;
+        };
+        match inc.instance(name) {
+            Ok(Some(i)) if !i.running() => {}
+            _ => continue,
+        }
+        let _ = writeln!(out, "deleting {name}");
+        // One instance that will not delete must not stop the whole pass (E-57).
+        match inc.delete(name) {
+            Ok(()) => n += 1,
+            Err(e) => {
+                let _ = writeln!(out, "could not delete {name}: {e}");
+            }
+        }
     }
-    Ok(doomed.len())
+    Ok(n)
 }
 
 pub fn fstrim(cfg: &Config, runner: &dyn Runner, out: &mut dyn Write) -> Result<(), String> {
@@ -120,7 +146,7 @@ pub fn once(
         last.0 = t;
     }
     if t.saturating_sub(last.1) >= 86400 {
-        match gc(rt, cfg, runner, out) {
+        match gc(rt, cfg, runner, out, false) {
             Ok(n) if n > 0 => {
                 let _ = writeln!(out, "deleted {n} old instance(s)");
             }
@@ -133,11 +159,37 @@ pub fn once(
     }
 }
 
+/// When the last fstrim and gc ran, kept across restarts: a timer that
+/// started again at every restart would never reach fstrim_hours on a host
+/// that restarts more often (E-41).
+pub const LAST_FILE: &str = "/var/lib/errand-box/maint-last";
+
+pub fn parse_last(text: &str) -> Option<(u64, u64)> {
+    let mut w = text.split_whitespace().map(|x| x.parse::<u64>().ok());
+    Some((w.next()??, w.next()??))
+}
+
 pub fn run_loop(rt: &Runtime, cfg: &Config, runner: &dyn Runner) -> ! {
-    // The first trim and gc wait a while after boot, so start-up stays quick.
-    let mut last = (now(), now().saturating_sub(86400 - 600));
+    // With no record, the first trim and gc wait a while after boot, so
+    // start-up stays quick.
+    let mut last = std::fs::read_to_string(LAST_FILE)
+        .ok()
+        .and_then(|t| parse_last(&t))
+        .unwrap_or((now(), now().saturating_sub(86400 - 600)));
     loop {
+        // Re-read the configuration and runtime.toml each pass, so a setup
+        // that changed keep_days, the pool or the project reaches the
+        // running loop without a restart (E-59). The binary is a separate
+        // matter: its run script carries the program's digest, so `up`
+        // restarts this when setup installs a new one (E-49).
+        let cfg = &crate::config::load(std::path::Path::new(crate::config::DEFAULT_PATH))
+            .unwrap_or_else(|_| cfg.clone());
+        let rt = &crate::runtime::load().unwrap_or_else(|_| rt.clone());
+        let before = last;
         once(rt, cfg, runner, &mut std::io::stdout(), &mut last);
+        if last != before {
+            let _ = std::fs::write(LAST_FILE, format!("{} {}\n", last.0, last.1));
+        }
         std::thread::sleep(Duration::from_secs(u64::from(
             cfg.maintenance.reap_seconds.max(5),
         )));
@@ -187,5 +239,18 @@ mod tests {
             stale(&rt, &insts, 14, now, &exists),
             vec!["eb-old".to_owned(), "eb-gone".to_owned()]
         );
+        // The state root itself is missing: only age counts.
+        let unmounted = |p: &str| !p.starts_with("/s");
+        assert_eq!(
+            stale(&rt, &insts, 14, now, &unmounted),
+            vec!["eb-old".to_owned()]
+        );
+    }
+
+    #[test]
+    fn the_last_run_record_parses() {
+        assert_eq!(parse_last("12 34\n"), Some((12, 34)));
+        assert_eq!(parse_last("12"), None);
+        assert_eq!(parse_last("x y"), None);
     }
 }

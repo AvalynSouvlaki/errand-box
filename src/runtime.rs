@@ -7,8 +7,9 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Unknown keys are ignored, not refused: a file a newer errand-box wrote
+/// must still work when the program is rolled back.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct Runtime {
     /// `root` or `rootless`.
     pub mode: String,
@@ -44,6 +45,11 @@ pub struct Runtime {
     /// directory is gone.
     #[serde(default)]
     pub state_root: String,
+    /// The session locks. The launcher, its watchdog and root's `reap` must
+    /// lock the same file, so it is fixed here rather than taken from the
+    /// caller's own state directory.
+    #[serde(default)]
+    pub lock_dir: String,
 }
 
 pub const PATH: &str = "/etc/errand-box/runtime.toml";
@@ -123,10 +129,14 @@ mod tests {
             host_runtime_dirs: vec!["/usr/local/lib/errand-box/bin".into()],
             admin_project: "user-994".into(),
             state_root: "/var/lib/errand/state".into(),
+            lock_dir: "/var/lib/errand/.local/state/errand-box/locks".into(),
         };
         let text = render(&r);
         let back: Runtime = toml::from_str(&text).unwrap();
         assert_eq!(back, r);
+        // A key from a newer errand-box does not stop this one.
+        let newer: Runtime = toml::from_str(&format!("{text}\nfuture_key = 1\n")).unwrap();
+        assert_eq!(newer, r);
         assert_eq!(back.endpoint().project, None);
         assert_eq!(back.admin_endpoint().project.as_deref(), Some("user-994"));
     }

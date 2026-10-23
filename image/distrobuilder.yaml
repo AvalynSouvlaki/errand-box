@@ -1,0 +1,72 @@
+# The errand-box guest image, for distrobuilder (build-incus).
+#
+# It runs image/provision.sh unchanged, as `errand-box image build` does in
+# a build instance, so both routes give the same guest. Use
+# scripts/build-image.sh, which stages the inputs in ./eb-build (the
+# provisioning files, the kage archive checked against pins.toml, and the
+# proxy CA if one is given) and runs distrobuilder from the directory that
+# holds it.
+#
+# debootstrap checks the archive's Release signature with the host's
+# debian-archive-keyring; no key server is needed.
+#
+# The inputs are staged under /opt, not /run: distrobuilder mounts a fresh
+# tmpfs on /run while an action runs, which would hide them.
+
+image:
+  distribution: debian
+  release: trixie
+  variant: errand-box
+  description: errand-box guest, Debian 13
+  architecture: x86_64
+
+source:
+  downloader: debootstrap
+  url: https://deb.debian.org/debian
+  variant: minbase
+
+packages:
+  manager: apt
+  update: true
+  cleanup: true
+  sets:
+  - packages:
+    - systemd
+    - systemd-sysv
+    - dbus
+    - ca-certificates
+    - iproute2
+    - util-linux
+    - xz-utils
+    action: install
+
+files:
+- path: /etc/hostname
+  generator: hostname
+
+- path: /etc/hosts
+  generator: hosts
+
+- path: /etc/machine-id
+  generator: dump
+
+- path: /var/lib/dbus/machine-id
+  generator: remove
+
+- path: /opt/eb-build
+  generator: copy
+  source: eb-build
+
+actions:
+- trigger: post-files
+  action: |-
+    #!/bin/sh
+    set -eu
+    # provision.sh reads EB_PROXY and the rest from this file, which
+    # scripts/build-image.sh writes; distrobuilder passes no environment.
+    if [ -f /opt/eb-build/env ]; then set -a; . /opt/eb-build/env; set +a; fi
+    sh /opt/eb-build/provision.sh
+    rm -rf /opt/eb-build
+
+mappings:
+  architecture_map: debian

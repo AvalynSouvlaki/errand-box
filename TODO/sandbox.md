@@ -143,23 +143,32 @@ the size of the restricted project's range, stated in E-30.
 **Category:** sandbox
 **Priority:** P2
 **Effort:** M
-**Status:** open
+**Status:** partial
 
 ## Problem
 
 Each host builds the guest image itself: 220 to 502 s, and the result can
 differ by the day of the build.
 
-## Approach
+## Done, and open
 
-A distrobuilder definition that runs `image/provision.sh` unchanged (it was
-written for that), built by a workflow and published with its digest in
-`pins.toml`; setup imports it and falls back to the local build.
+[scripts/build-image.sh](../scripts/build-image.sh) builds the image with
+distrobuilder (`image/distrobuilder.yaml`), running `image/provision.sh`
+unchanged, and writes `OUT_DIR/inputs`, the digest `errand-box image
+import` records so setup takes the image as current (E-31). A unit test
+proves the shell and the Rust compute the same digest
+(`image::tests::the_distrobuilder_build_records_the_same_inputs`). Built
+and imported on the build host 2026-10-23 (a 395 MiB rootfs; `image import`
+checked its SHA256SUMS, recorded the inputs and moved the alias). Open:
+building it in a GitHub workflow and publishing it with its digest in
+`pins.toml`, so a host imports a release instead of building (waits on
+Actions, T-009).
 
 ## Prove
 
 ```sh
-sh tests/live/live.sh   # on a host that imported the published image
+sudo sh scripts/build-image.sh OUT_DIR && errand-box image import OUT_DIR
+sh tests/live/live.sh
 ```
 
 ---
@@ -276,3 +285,50 @@ sh tests/live/live.sh   # with sandbox.backend = "incus" and no `bailey` on erra
 ```
 
 Every check PASS.
+
+---
+
+# T-020: A broker link that does not need proxy devices
+
+**Source:** the review of 2026-10-23 (security lens), measured in build
+**Category:** sandbox
+**Priority:** P1
+**Effort:** M
+**Status:** open
+
+## Problem
+
+errand's project allows proxy devices, because the broker link is two
+proxy devices per session (`src/session.rs` `desired_devices`; setup sets
+`restricted.devices.proxy=allow`, `src/setup.rs`). Incus has no setting
+that limits what a proxy device may connect to, so the errand account can
+attach one whose host end is any host socket, the Incus admin socket
+included. That grants the errand account more than the restricted project
+is meant to (E-61). A guest cannot add devices, so this is not reachable
+from inside a session; it matters when the errand account itself is
+compromised.
+
+## Premise
+
+Measured in build on Incus 6.0.6: with `restricted.devices.proxy=allow`,
+the errand account attached such a device to a throwaway instance. With
+`restricted.devices.proxy=block`, Incus refused the device for the errand
+account and for root alike ("Proxy devices are forbidden"), so root cannot
+add the broker devices on errand's behalf in a project that forbids them.
+
+## Approach
+
+Carry the broker over a unix socket instead: the shim already relays the
+broker through a unix socket for the rootless engine (`relay::unix_to_tcp`,
+E-23). Share that socket into the guest with a disk device, which the
+project already allows under errand's home, and have the guest's boot step
+listen on 169.254.169.1 and relay to it, so kage and the guest's services
+see the same address. Then set `restricted.devices.proxy=block`. The guest
+image changes, so every host rebuilds it (E-31).
+
+## Prove
+
+```sh
+sh tests/live/live.sh   # the broker and system-proxy checks pass with proxy devices blocked
+incus project get user-UID restricted.devices.proxy   # block
+```

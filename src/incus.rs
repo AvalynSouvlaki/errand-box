@@ -43,7 +43,9 @@ pub struct Instance {
 
 impl Instance {
     pub fn running(&self) -> bool {
-        self.status.eq_ignore_ascii_case("running")
+        // Incus reports "Ready" for a running guest that has signalled
+        // readiness; it is up, so it counts as running (E-60).
+        self.status.eq_ignore_ascii_case("running") || self.status.eq_ignore_ascii_case("ready")
     }
 }
 
@@ -196,6 +198,22 @@ impl<'a> Incus<'a> {
 
     pub fn delete(&self, name: &str) -> Result<(), String> {
         check(self.run(["delete", "--force", name]))
+    }
+
+    /// Rename a stopped instance.
+    pub fn rename(&self, from: &str, to: &str) -> Result<(), String> {
+        check(self.run(["rename", from, to]))
+    }
+
+    /// Point `alias` at `target`, replacing what it pointed at: the new
+    /// alias is made under a spare name first, so the old one stays until
+    /// the new one exists.
+    pub fn move_alias(&self, alias: &str, target: &str) -> Result<(), String> {
+        let spare = format!("{alias}-next");
+        let _ = self.run(["image", "alias", "delete", &spare]);
+        check(self.run(["image", "alias", "create", &spare, target]))?;
+        let _ = self.run(["image", "alias", "delete", alias]);
+        check(self.run(["image", "alias", "rename", &spare, alias]))
     }
 
     pub fn config_set(&self, name: &str, kv: &[(String, String)]) -> Result<(), String> {
@@ -357,6 +375,13 @@ mod tests {
         let i = Incus::new(ep(), &f);
         let inst = i.instance("eb-a").unwrap().unwrap();
         assert!(inst.running());
+        assert!(
+            parse_instance(
+                &serde_json::json!({"name":"x","status":"Ready","config":{},"devices":{}})
+            )
+            .unwrap()
+            .running()
+        );
         assert_eq!(inst.config["k"], "v");
         assert_eq!(inst.devices["ws"]["type"], "disk");
         assert_eq!(

@@ -58,15 +58,15 @@ native Incus backend in errand, which waits on errand's author.
 
 ## Counts
 
-**19 items. 8 open, 2 partial, 2 blocked, 7 done.**
+**20 items. 5 open, 4 partial, 2 blocked, 9 done.**
 
 | priority | open | partial | blocked | done | total |
 | --- | --- | --- | --- | --- | --- |
 | P0 | 0 | 0 | 0 | 3 | 3 |
-| P1 | 3 | 1 | 1 | 3 | 8 |
-| P2 | 3 | 1 | 1 | 1 | 6 |
+| P1 | 2 | 2 | 1 | 4 | 9 |
+| P2 | 1 | 2 | 1 | 2 | 6 |
 | P3 | 2 | 0 | 0 | 0 | 2 |
-| **All** | 8 | 2 | 2 | 7 | 19 |
+| **All** | 5 | 4 | 2 | 9 | 20 |
 
 ---
 
@@ -84,12 +84,13 @@ native Incus backend in errand, which waits on errand's author.
 | [T-008](setup.md) | P2 | setup | done | Bounded logs, and a daemon that restarts in a loop is reported |
 | [T-009](upkeep.md) | P1 | upkeep | open | The first release |
 | [T-010](setup.md) | P2 | setup | open | Setup without root at run time |
-| [T-011](setup.md) | P1 | setup | open | Live test on a host with systemd |
-| [T-012](setup.md) | P1 | setup | open | Live test on musl and on WSL2 |
-| [T-013](setup.md) | P2 | setup | open | Live test on aarch64 |
-| [T-014](sandbox.md) | P2 | sandbox | open | A distrobuilder image, built once and published |
+| [T-011](setup.md) | P1 | setup | done | Live test on a host with systemd |
+| [T-012](setup.md) | P1 | setup | partial | Live test on musl and on WSL2 |
+| [T-013](setup.md) | P2 | setup | partial | Live test on aarch64 |
+| [T-014](sandbox.md) | P2 | sandbox | partial | A distrobuilder image, built once and published |
 | [T-015](sandbox.md) | P1 | sandbox | blocked | A live session with a real chat service and model gateway |
 | [T-016](sandbox.md) | P3 | sandbox | open | errand's description of this backend is partly wrong |
 | [T-017](upkeep.md) | P3 | upkeep | open | A documentation check: every command, key and path a page names exists |
-| [T-018](setup.md) | P2 | setup | partial | Choose a pool size that fits the host disk |
+| [T-018](setup.md) | P2 | setup | done | Choose a pool size that fits the host disk |
 | [T-019](sandbox.md) | P2 | sandbox | blocked | An incus backend in errand |
+| [T-020](sandbox.md) | P1 | sandbox | open | A broker link that does not need proxy devices |

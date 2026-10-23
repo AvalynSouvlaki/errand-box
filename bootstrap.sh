@@ -1,13 +1,19 @@
 #!/bin/sh
 # bootstrap.sh - put errand-box on a Linux host, then hand over to it.
 #
-#   sh bootstrap.sh [--version vX.Y.Z] [--dry-run] [-- <errand-box setup options>]
+#   sh bootstrap.sh [--version vX.Y.Z] [--base-url URL] [--dry-run]
+#                   [-- <errand-box setup options>]
 #
 # From a checkout (Cargo.toml next to this file) it builds errand-box with
 # cargo. Otherwise it downloads the release binary for this machine and
 # checks it against the release's SHA256SUMS before it runs anything. Then
-# it installs the program to /usr/local/sbin and, if options follow `--`,
-# runs `errand-box setup` with them.
+# it installs the program where setup keeps it,
+# /usr/local/lib/errand-box/bin, links /usr/local/bin/errand-box to it and,
+# if options follow `--`, runs `errand-box setup` with them.
+#
+# --base-url (or ERRAND_BOX_RELEASE_URL) is a directory that holds the
+# release assets, for a mirror or a host without GitHub; the digest check
+# is the same.
 #
 # Needs: a POSIX shell, and curl or wget for a release; cargo for a checkout.
 # Runs as root, or through sudo without a password; it never prompts.
@@ -17,16 +23,20 @@ set -u
 
 repo=AvalynSouvlaki/errand-box
 version=latest
+base_url=${ERRAND_BOX_RELEASE_URL:-}
 dry=0
+dest=/usr/local/lib/errand-box/bin/errand-box
+link=/usr/local/bin/errand-box
 say() { printf 'bootstrap: %s\n' "$*"; }
 die() { printf 'bootstrap: %s\n' "$*" >&2; exit "${2:-1}"; }
 
 while [ $# -gt 0 ]; do
   case $1 in
     --version) [ $# -ge 2 ] || die "--version needs a value" 2; version=$2; shift 2 ;;
+    --base-url) [ $# -ge 2 ] || die "--base-url needs a value" 2; base_url=${2%/}; shift 2 ;;
     --dry-run) dry=1; shift ;;
     --) shift; break ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
     *) die "unknown option $1" 2 ;;
   esac
 done
@@ -77,7 +87,9 @@ if [ -f "$here/Cargo.toml" ] && grep -q '^name = "errand-box"' "$here/Cargo.toml
   (cd "$here" && CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-4} run cargo build --release --locked) || die "cargo build failed"
   bin="$here/target/release/errand-box"
 else
-  if [ "$version" = latest ]; then
+  if [ -n "$base_url" ]; then
+    base=$base_url
+  elif [ "$version" = latest ]; then
     base="https://github.com/$repo/releases/latest/download"
   else
     base="https://github.com/$repo/releases/download/$version"
@@ -96,11 +108,25 @@ else
   bin="$tmp/$asset"
 fi
 
-run $as_root install -m 0755 "$bin" /usr/local/sbin/errand-box || die "cannot install /usr/local/sbin/errand-box"
-say "installed /usr/local/sbin/errand-box"
+# The same place setup installs to, so that a later setup replaces this
+# copy instead of leaving a second, older one on PATH.
+run $as_root mkdir -p "$(dirname "$dest")" "$(dirname "$link")" || die "cannot create $(dirname "$dest")"
+run $as_root install -m 0755 "$bin" "$dest" || die "cannot install $dest"
+run $as_root ln -sfn "$dest" "$link" || die "cannot link $link"
+# An earlier bootstrap.sh installed a copy in /usr/local/sbin, which comes
+# first on root's PATH and would run instead of this one.
+old=/usr/local/sbin/errand-box
+if [ -e "$old" ] && [ "$(readlink "$old" 2>/dev/null)" != "$dest" ]; then
+  run $as_root ln -sfn "$dest" "$old" || die "cannot replace $old"
+fi
+if [ $dry = 1 ]; then
+  say "would install $dest and link $link"
+else
+  say "installed $dest; $link links to it"
+fi
 if [ $# -gt 0 ]; then
   say "running: errand-box setup $*"
-  run $as_root /usr/local/sbin/errand-box setup "$@"
+  run $as_root "$dest" setup "$@"
   exit $?
 fi
 say "next: errand-box setup --config errand-box.toml --env errand-box.env --creds creds.env"

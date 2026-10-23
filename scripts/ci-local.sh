@@ -11,8 +11,11 @@
 #   sh scripts/ci-local.sh --step NAME     one step
 #   sh scripts/ci-local.sh --list          the step names
 #
-# Steps: gate kill-by-name shellcheck fmt clippy test pins errand-config musl.
-# `musl` builds the static release binary for this machine's architecture.
+# Steps: gate kill-by-name shellcheck fmt clippy test pins errand-config musl
+# cross. `musl` builds the static release binary for this machine's
+# architecture. `cross` builds for the other architecture (x86_64 and
+# aarch64) and runs the unit and integration tests there under qemu-user
+# when qemu-<arch>-static is installed; without it, it only builds.
 # The live tests (tests/live/live.sh) need a host with Incus and are not a
 # step here; docs/tests.md says when to run them.
 #
@@ -23,7 +26,7 @@ set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root" || exit 2
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
-STEPS="gate kill-by-name shellcheck fmt clippy test pins errand-config musl"
+STEPS="gate kill-by-name shellcheck fmt clippy test pins errand-config musl cross"
 
 # The shell files this repository ships. research/ is a record of what was
 # run and is not linted.
@@ -31,7 +34,7 @@ shell_files() {
   printf '%s\n' bootstrap.sh image/provision.sh image/launch image/guest-init tests/fake-incus \
     tests/pins-test.sh tests/errand-config-test.sh tests/live/live.sh scripts/ci-local.sh scripts/pins.sh \
     scripts/check-no-kill-by-name.sh scripts/check-todo.sh scripts/track-issue.sh \
-    scripts/freshness.sh scripts/watch-upstreams.sh
+    scripts/freshness.sh scripts/watch-upstreams.sh scripts/build-image.sh tests/hosts/host.sh
 }
 
 musl_target() {
@@ -67,6 +70,25 @@ step() {
         file "$bin" | grep -q 'static' || { echo "$bin is not static: $(file "$bin")" >&2; return 1; }
       fi
       "$bin" version
+      ;;
+    cross)
+      case $(uname -m) in
+        x86_64 | amd64) arch=aarch64 ;;
+        aarch64 | arm64) arch=x86_64 ;;
+        *) echo "no cross target for $(uname -m)" >&2; return 2 ;;
+      esac
+      t=$arch-unknown-linux-musl
+      rustup target list --installed 2>/dev/null | grep -qx "$t" || { echo "rust target $t is not installed: rustup target add $t" >&2; return 2; }
+      # rust-lld links a static musl binary for any target; no cross gcc.
+      tv=$(printf '%s' "$t" | tr 'a-z-' 'A-Z_')
+      export "CARGO_TARGET_${tv}_LINKER=rust-lld"
+      cargo build --locked --release --target "$t" || return 1
+      if command -v "qemu-$arch-static" >/dev/null 2>&1; then
+        export "CARGO_TARGET_${tv}_RUNNER=qemu-$arch-static"
+        cargo test --locked --target "$t"
+      else
+        echo "qemu-$arch-static is missing: built for $t, tests not run"
+      fi
       ;;
     *) echo "unknown step: $1 (steps: $STEPS)" >&2; return 2 ;;
   esac

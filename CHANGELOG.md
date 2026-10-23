@@ -9,6 +9,42 @@ errand.
 
 ## Unreleased
 
+### 2026-10-23T10:28Z: hardening, QOL commands, and a host matrix
+
+**Record:** [TODO/PROGRESS.md](TODO/PROGRESS.md); entries T-011 and T-018
+closed, T-012, T-013 and T-014 to partial, T-020 added; E-34 to E-65 in
+[docs/edge-cases.md](docs/edge-cases.md). Not deployed and not released: no tag, no release asset. CI is off;
+every step ran through `scripts/ci-local.sh`.
+
+- **Start-up order (E-34).** Each daemon waits for the ones it needs before
+  it starts (`errand-box __wait`), and `up` watches them all until each
+  keeps one pid. The crash-loop check reads s6 2.13's `pid N pgid N` format
+  (E-62).
+- **systemd (T-011).** `up` verifies each unit stays up, sets incusd's
+  egress proxy through Incus `core.proxy_*` (E-13), and manages the packaged
+  lxcfs unit with a drop-in that never stops it  -  stopping it stopped
+  incusd, which `Requires=` it (E-37). Ubuntu 24.04 passes setup, the live
+  tests, a reboot and a session after it.
+- **OpenRC and musl.** setup creates the `incus-admin` and `incus` groups
+  Alpine omits (E-35) and writes an OpenRC boot hook (E-36).
+- **New commands.** `status`, `shell`, `logs`, `uninstall [--purge]`,
+  `image import`, `gc --dry-run`, and `--json` for setup, up, status, doctor
+  and image.
+- **Lifecycle.** gc and reap do not abort on one instance (E-57) and share
+  the launcher's lock (E-40); a run does not reuse a running orphan (E-56);
+  maint keeps its timers across restarts (E-41); `up` falls back to the last
+  applied config when the live one will not parse (E-42).
+- **Security.** symlink-safe chown under errand's home (E-54); proxy.env at
+  0600, quoted (E-46); the Zabbly keyring must hold exactly the pinned key
+  (E-55); a per-instance process limit, and `bailey doctor` reporting the
+  real limits (E-63). Found and not closed: the broker needs proxy devices,
+  which let the errand account reach the admin socket (E-61, T-020).
+- **The image.** `scripts/build-image.sh` builds it with distrobuilder and
+  records an inputs digest; `errand-box image import` checks SHA256SUMS and
+  records the digest so setup takes it as current.
+- **aarch64.** The `cross` CI step builds for the other architecture and
+  runs every test under qemu-user.
+
 ### 2026-10-23T08:30Z: errand-box 0.1.0, built and tested on one host
 
 **Record:** [TODO/PROGRESS.md](TODO/PROGRESS.md), entries T-001 to T-008 in

@@ -61,6 +61,9 @@ pub struct Boxes {
     /// The CPU limit of each instance: a count, or a percentage of the host's
     /// CPUs, which errand-box turns into a count of at least one.
     pub cpus: String,
+    /// The process (pids cgroup) limit of each instance: a count, or 0 for
+    /// no limit. It bounds a fork bomb in one session to that session.
+    pub pids: u32,
     /// Stopped instances unused for this many days are deleted by `gc`.
     pub keep_days: u32,
     /// Seconds a stopping session gets for a clean shutdown before it is
@@ -74,6 +77,7 @@ impl Default for Boxes {
             disk: "20GiB".into(),
             memory: "80%".into(),
             cpus: "80%".into(),
+            pids: 8192,
             keep_days: 14,
             stop_seconds: 4,
         }
@@ -190,12 +194,50 @@ pub fn parse(text: &str) -> Result<Config, String> {
     Ok(c)
 }
 
+/// The configuration at `path`. A missing file means the defaults only for
+/// the default path: a `--config` that names a missing file is a mistake,
+/// not a request for the defaults.
 pub fn load(path: &Path) -> Result<Config, String> {
     match std::fs::read_to_string(path) {
-        Ok(t) => parse(&t),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+        Ok(t) => parse(&t).map_err(|e| format!("{}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && path == Path::new(DEFAULT_PATH) => {
+            Ok(Config::default())
+        }
         Err(e) => Err(format!("cannot read {}: {e}", path.display())),
     }
+}
+
+/// The configuration the last successful setup applied. `up` falls back to
+/// it when the live file no longer parses, so a typo does not stop the
+/// daemons from coming back after a restart (E-42).
+pub const APPLIED_PATH: &str = "/var/lib/errand-box/applied.toml";
+
+/// A size as Incus reads it: a whole number and one of its exact suffixes.
+/// kB, MB, GB, TB are powers of 1000; KiB, MiB, GiB, TiB powers of 1024.
+/// Incus refuses any other spelling, so the configuration refuses it first.
+pub fn incus_bytes(s: &str) -> Result<u64, String> {
+    let digits: String = s.chars().take_while(char::is_ascii_digit).collect();
+    let n: u64 = digits
+        .parse()
+        .map_err(|_| format!("not a size: {s:?}; write a number and a unit such as 20GiB"))?;
+    let mul: u64 = match &s[digits.len()..] {
+        "" | "B" => 1,
+        "kB" => 1000,
+        "MB" => 1000_u64.pow(2),
+        "GB" => 1000_u64.pow(3),
+        "TB" => 1000_u64.pow(4),
+        "KiB" => 1 << 10,
+        "MiB" => 1 << 20,
+        "GiB" => 1 << 30,
+        "TiB" => 1 << 40,
+        other => {
+            return Err(format!(
+                "unknown size unit {other:?} in {s:?}; Incus takes B, kB, MB, GB, TB, KiB, MiB, GiB or TiB, spelled exactly"
+            ));
+        }
+    };
+    n.checked_mul(mul)
+        .ok_or_else(|| format!("size out of range: {s:?}"))
 }
 
 impl Config {
@@ -219,17 +261,16 @@ impl Config {
             ));
         }
         if self.engine.pool_size != "auto" {
-            crate::policy::parse_size(&self.engine.pool_size)?;
+            incus_bytes(&self.engine.pool_size).map_err(|e| format!("engine.pool_size: {e}"))?;
         }
-        let disk = crate::policy::parse_size(&self.boxes.disk)?;
+        let disk = incus_bytes(&self.boxes.disk).map_err(|e| format!("box.disk: {e}"))?;
         if disk < 4 << 30 {
             return Err(format!(
                 "box.disk is {}; the guest image alone needs about 2 GiB, so use at least 4GiB (E-21)",
                 self.boxes.disk
             ));
         }
-        percent_or(&self.boxes.memory, crate::policy::parse_size)
-            .map_err(|e| format!("box.memory: {e}"))?;
+        percent_or(&self.boxes.memory, incus_bytes).map_err(|e| format!("box.memory: {e}"))?;
         percent_or(&self.boxes.cpus, |s| {
             s.parse::<u64>().map_err(|e| e.to_string())
         })
@@ -240,14 +281,28 @@ impl Config {
                 self.image.source
             ));
         }
-        if !valid_name(&self.errand.user) {
+        if !valid_name(&self.errand.user) || self.errand.user == "root" {
             return Err(format!(
-                "errand.user is not a valid account name: {:?}",
+                "errand.user is not a valid unprivileged account name: {:?}",
                 self.errand.user
             ));
         }
-        if !Path::new(&self.errand.home).is_absolute() {
-            return Err("errand.home must be an absolute path".into());
+        let home = Path::new(&self.errand.home);
+        if !home.is_absolute() || home.components().count() < 2 {
+            return Err(format!(
+                "errand.home must be an absolute path below the root, not {:?}; setup chowns it to the errand account and gc reads below it",
+                self.errand.home
+            ));
+        }
+        for bad in [
+            "/", "/root", "/etc", "/usr", "/var", "/boot", "/bin", "/sbin", "/lib", "/dev",
+            "/proc", "/sys",
+        ] {
+            if home == Path::new(bad) {
+                return Err(format!(
+                    "errand.home must not be {bad}: setup chowns it to the errand account"
+                ));
+            }
         }
         Ok(())
     }
@@ -293,6 +348,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sizes_are_spelled_as_incus_spells_them() {
+        assert_eq!(incus_bytes("20GiB"), Ok(20 << 30));
+        assert_eq!(incus_bytes("20GB"), Ok(20_000_000_000));
+        assert_eq!(incus_bytes("512MiB"), Ok(512 << 20));
+        assert_eq!(incus_bytes("4096"), Ok(4096));
+        for bad in ["20gib", "20G", "20 GiB", "GiB", "20gb", "-1GiB"] {
+            assert!(incus_bytes(bad).is_err(), "{bad}");
+        }
+        assert!(parse("[box]\ndisk = \"20gib\"\n").is_err());
+    }
+
+    #[test]
+    fn a_named_config_file_must_exist() {
+        let missing = Path::new("/nonexistent/errand-box.toml");
+        assert!(load(missing).unwrap_err().contains("cannot read"));
+    }
+
+    #[test]
     fn empty_file_is_the_defaults() {
         let c = parse("").unwrap();
         assert_eq!(c, Config::default());
@@ -335,5 +408,9 @@ mod tests {
         assert!(parse("[box]\nmemory = \"lots\"\n").is_err());
         assert!(parse("[errand]\nhome = \"rel\"\n").is_err());
         assert!(parse("[errand]\nuser = \"Root\"\n").is_err());
+        assert!(parse("[errand]\nuser = \"root\"\n").is_err());
+        assert!(parse("[errand]\nhome = \"/\"\n").is_err());
+        assert!(parse("[errand]\nhome = \"/root\"\n").is_err());
+        assert!(parse("[errand]\nhome = \"/var/lib/errand\"\n").is_ok());
     }
 }

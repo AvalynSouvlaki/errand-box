@@ -13,6 +13,7 @@ pool_size = "auto"       # auto: half the free space, at least 20GiB
 disk = "20GiB"           # root disk quota of each session instance (at least 4GiB)
 memory = "80%"           # a size, or a percentage of the host's memory
 cpus = "80%"             # a count, or a percentage of the host's CPUs
+pids = 8192              # process limit per instance (0 for no limit)
 keep_days = 14           # gc deletes stopped instances unused this long
 stop_seconds = 4         # clean stop before a forced one; keep below errand's grace
 

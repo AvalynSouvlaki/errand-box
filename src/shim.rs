@@ -92,6 +92,36 @@ fn landlock_abi() -> i64 {
 
 /// The doctor report, as lines. errand reads `landlock: ABI`,
 /// `user namespaces:` and `cgroup delegation:`; the rest is for people.
+/// The limits Incus holds on a session instance, read from the golden one's
+/// profile, so `doctor` states what is really enforced, not what setup
+/// means to set.
+fn instance_limits(rt: &Runtime, runner: &dyn Runner) -> String {
+    let inc = Incus::new(rt.endpoint(), runner);
+    let v = match inc.query("/1.0/profiles/default") {
+        Ok(v) => v,
+        Err(_) => return "unknown".to_owned(),
+    };
+    let get = |k: &str| {
+        v.pointer(&format!("/config/{}", k.replace('.', "~1")))
+            .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
+    };
+    let mut parts = Vec::new();
+    parts.push(match get("limits.memory") {
+        Some(m) => format!("memory {m}"),
+        None => "memory unset".to_owned(),
+    });
+    parts.push(match get("limits.cpu") {
+        Some(c) => format!("cpu {c}"),
+        None => "cpu unset".to_owned(),
+    });
+    parts.push(match get("limits.processes") {
+        Some(p) => format!("processes {p}"),
+        None => "processes unlimited".to_owned(),
+    });
+    parts.join(", ")
+}
+
 pub fn doctor_lines(rt: &Runtime, runner: &dyn Runner) -> (Vec<String>, bool) {
     let inc = Incus::new(rt.endpoint(), runner);
     let abi = landlock_abi();
@@ -110,7 +140,10 @@ pub fn doctor_lines(rt: &Runtime, runner: &dyn Runner) -> (Vec<String>, bool) {
             }
         ),
         "  user namespaces: yes".to_owned(),
-        "  cgroup delegation: memory, pids, cpu (Incus limits each instance)".to_owned(),
+        format!(
+            "  cgroup delegation: memory, pids, cpu (per-instance limits: {})",
+            instance_limits(rt, runner)
+        ),
         "engine:".to_owned(),
     ];
     let mut ok = true;
@@ -366,6 +399,7 @@ mod tests {
             host_runtime_dirs: vec![],
             admin_project: String::new(),
             state_root: String::new(),
+            lock_dir: String::new(),
         };
         let (lines, ok) = doctor_lines(&rt, &f);
         assert!(ok, "{lines:?}");

@@ -237,26 +237,33 @@ sh tests/live/live.sh   # with engine.mode = "rootless"; quota reports DEGRADED 
 **Category:** setup
 **Priority:** P1
 **Effort:** M
-**Status:** open
+**Status:** done
 
 ## Problem
 
 `systemd_up` in `src/up.rs` writes units and enables the packaged ones. No
-live run has covered it.
+live run had covered it.
 
-## Approach
+## Done
 
-A disposable VM or container with systemd as PID 1 (Ubuntu 24.04 and
-Debian 13); setup, then the live tests, then a reboot and the live tests
-again.
+2026-10-23, Ubuntu 24.04 as a nested host with systemd as PID 1
+([tests/hosts/host.sh](../tests/hosts/host.sh)): bootstrap, setup twice
+(idempotent but for errand's dummy credentials, T-015), the live tests (39
+PASS, the quota test skipped on a nested dir pool), a container restart with
+systemd bringing the sandbox back on its own, and a probe and a session
+after the restart (17 PASS). The run drove out real defects on systemd,
+each with an edge-case row and a fix: E-34 (start order), E-37 (the
+packaged lxcfs unit skipped in a container, and stopping it stopping
+incusd), E-13 (incusd's proxy through `core.proxy_*`), and the unit settle
+check.
 
 ## Prove
 
 ```sh
-sh tests/live/live.sh
+sh tests/hosts/host.sh u2404 ubuntu/24.04
 ```
 
-All PASS on the systemd host, before and after a reboot.
+Every check PASS (errand itself needs real credentials, T-015).
 
 ---
 
@@ -266,25 +273,35 @@ All PASS on the systemd host, before and after a reboot.
 **Category:** setup
 **Priority:** P1
 **Effort:** M
-**Status:** open
+**Status:** partial
 
 ## Problem
 
 `src/setup.rs` has an apk branch for Alpine, and `src/host.rs` detects
-WSL2. Neither has run on such a host.
+WSL2. WSL2 has not run on such a host.
 
-## Premise
+## Done, and open
 
-READ, not measured: Alpine packages Incus and s6; WSL2 runs systemd when
-it is enabled, and has cgroup v2.
+2026-10-23, Alpine 3.22 as a nested host (musl, OpenRC, busybox): setup
+installs Incus and s6, creates the `incus-admin` and `incus` groups the
+package does not (E-35), writes the OpenRC boot hook (E-36), and `errand-box
+up` brings every daemon back after a restart. The run drove out E-35 and
+E-62 (newer `s6-svstat` prints `pid N pgid N`, which the crash-loop check
+misread). Open: a nested host cannot build the guest image, because that
+launches a third level of container nesting that the test host's kernel
+refuses (`forkstart` exit 1), so the full live suite has not run on musl;
+and WSL2 is untouched. A real (not triply nested) Alpine host, or a nested
+host that imports the image (`errand-box image import`) instead of building
+it, would finish musl.
 
 ## Prove
 
 ```sh
-sh tests/live/live.sh
+sh tests/hosts/host.sh alpine alpine/3.22
+sh tests/live/live.sh   # on a real Alpine host, and on WSL2 with Ubuntu
 ```
 
-All PASS on Alpine 3.22 and on WSL2 with Ubuntu 24.04.
+All PASS.
 
 ---
 
@@ -294,15 +311,24 @@ All PASS on Alpine 3.22 and on WSL2 with Ubuntu 24.04.
 **Category:** setup
 **Priority:** P2
 **Effort:** S
-**Status:** open
+**Status:** partial
+
+## Done, and open
+
+The `cross` step of [scripts/ci-local.sh](../scripts/ci-local.sh) builds the
+static binary for aarch64 with `rust-lld` and runs every unit and
+integration test there under `qemu-aarch64-static` (106 + 6 pass). That
+proves the code on aarch64, not a host: no aarch64 machine has run setup or
+the live tests, which is what stays open.
 
 ## Prove
 
 ```sh
-sh tests/live/live.sh
+sh scripts/ci-local.sh --step cross   # done
+sh tests/live/live.sh                 # open: on an aarch64 host
 ```
 
-All PASS on an aarch64 host.
+All PASS.
 
 ---
 
@@ -312,22 +338,24 @@ All PASS on an aarch64 host.
 **Category:** setup
 **Priority:** P2
 **Effort:** S
-**Status:** partial
+**Status:** done
 
 ## Problem
 
-`pool_size` in `src/setup.rs` makes a pool of at least 20 GiB, even when the
-host disk has less free space. When the disk fills, every guest gets I/O
+`pool_size` in `src/setup.rs` made a pool of at least 20 GiB, even when the
+host disk had less free space. When the disk fills, every guest gets I/O
 errors.
 
-## Approach
+## Done
 
-Done: setup reports the condition as DEGRADED with both numbers. Open:
-choose the size before the pool exists (free space less a margin, with a
-floor of `box.disk`), and have `maint` report free space every pass.
+setup reports the condition as DEGRADED with both numbers (E-32), the auto
+size is half the free space with a floor of three times `box.disk` (so one
+session cannot fill the pool), and `errand-box status` reports the pool and
+host-disk use, degraded at 85 % and failed at 95 %.
 
 ## Prove
 
 ```sh
 cargo test --locked setup
+errand-box status
 ```

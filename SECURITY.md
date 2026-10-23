@@ -57,7 +57,7 @@ Never in a chat, an issue, or a file in a repository.
 | a guest's root | its own instance; the two host directories errand granted it (the project and the session's state); errand's broker, with errand's allowlist. Not the host network, other guests, or the host's other files. |
 | a guest that escapes its container through a setup mistake | an unprivileged host uid of its own range; files of the errand account through the agent's mapped uid 1000. |
 | a guest that escapes through a kernel exploit | the host. |
-| the errand account | errand's credentials. In Incus, only its restricted project: no privileged containers, no raw LXC settings, disk devices only under its home. Not root. |
+| the errand account | errand's credentials, and today root: its restricted project forbids privileged containers, raw LXC settings, and disk devices outside its home, but allows proxy devices for the broker link, and a proxy device can reach any host socket, the Incus admin socket included (E-61). T-020 replaces the link so the project can forbid them. A guest cannot add devices, so this is reached only through the errand account itself. |
 | incusd, incus-user, lxcfs | root. |
 
 ## The rules each change keeps

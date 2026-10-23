@@ -51,6 +51,8 @@ bg=""
 
 pass() { printf 'PASS %s: %s\n' "$1" "$2"; }
 fail() { printf 'FAIL %s: %s\n' "$1" "$2"; failed=1; }
+# A check that does not apply to this host: printed, never a failure.
+skip() { printf 'SKIP %s: %s\n' "$1" "$2"; }
 check() { # test, condition result (0 = pass), detail
   if [ "$2" = 0 ]; then pass "$1" "$3"; else fail "$1" "$3"; fi
 }
@@ -242,6 +244,12 @@ t_inside() {
 }
 
 t_quota() {
+  pool=$(inc profile device get default root pool 2>/dev/null)
+  driver=$(incus storage list -f csv -c nD </dev/null 2>/dev/null | sed -n "s/^$pool,//p")
+  if [ "$driver" = dir ]; then
+    skip quota "the pool $pool is a dir pool, which does not enforce a quota (E-05)"
+    return
+  fi
   q="eb-live-quota"
   inc delete -f "$q" >/dev/null 2>&1
   if ! inc copy "$golden" "$q" >/dev/null 2>&1 || ! inc config device override "$q" root size=5GiB >/dev/null 2>&1 || ! inc start "$q" >/dev/null 2>&1; then

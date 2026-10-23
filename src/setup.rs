@@ -26,6 +26,8 @@ pub struct Args {
     pub env: Option<PathBuf>,
     pub creds: Option<PathBuf>,
     pub skip_image: bool,
+    /// Print each step to stderr as it finishes.
+    pub live: bool,
 }
 
 pub const GOLDEN: &str = "eb-golden";
@@ -40,12 +42,46 @@ fn long(c: Cmd) -> Cmd {
         .env("DEBIAN_FRONTEND", "noninteractive")
 }
 
+/// True when a `gpg --with-colons` listing holds exactly one primary key
+/// and its fingerprint is `want`: a keyring with extra keys is refused.
+pub fn key_is_only(colons: &str, want: &str) -> bool {
+    let mut primaries = Vec::new();
+    let mut after_pub = false;
+    for l in colons.lines() {
+        if l.starts_with("pub:") {
+            after_pub = true;
+        } else if l.starts_with("fpr:") && after_pub {
+            if let Some(fp) = l.split(':').nth(9) {
+                primaries.push(fp.to_owned());
+            }
+            after_pub = false;
+        } else if l.starts_with("sub:") {
+            after_pub = false;
+        }
+    }
+    primaries == [want]
+}
+
 /// The Zabbly apt source for a channel and suite.
 pub fn zabbly_sources(channel: &str, suite: &str, arch: &str) -> String {
     let deb_arch = if arch == "aarch64" { "arm64" } else { "amd64" };
     format!(
         "# Written by errand-box setup.\nEnabled: yes\nTypes: deb\nURIs: https://pkgs.zabbly.com/incus/{channel}\nSuites: {suite}\nComponents: main\nArchitectures: {deb_arch}\nSigned-By: /etc/apt/keyrings/zabbly.asc\n"
     )
+}
+
+/// The Zabbly channel already configured in `/etc/apt/sources.list.d`, if
+/// any. setup keeps it when the operator asked for `auto` and it runs on
+/// this host, so a second setup does not move an existing install from one
+/// Incus line to another (E-64).
+pub fn configured_zabbly_channel() -> Option<String> {
+    for ch in ["stable", "lts-6.0"] {
+        let p = format!("/etc/apt/sources.list.d/zabbly-incus-{ch}.sources");
+        if Path::new(&p).exists() {
+            return Some(ch.to_owned());
+        }
+    }
+    None
 }
 
 /// The client version from `incus version`.
@@ -62,7 +98,20 @@ pub fn lacks_idmap_fix(version: &str) -> bool {
 }
 
 fn packages(cfg: &Config, host: &Host, runner: &dyn Runner, r: &mut Report) {
-    let (channel, note) = host.incus_channel(&cfg.engine.incus);
+    let (mut channel, mut note) = host.incus_channel(&cfg.engine.incus);
+    // Keep an already-configured channel on `auto`, unless this host cannot
+    // run it (a v1 host and the `stable` line); switching it is an upgrade
+    // or a downgrade the operator did not ask for (E-64).
+    if cfg.engine.incus == "auto"
+        && let Some(cur) = configured_zabbly_channel()
+        && cur != channel
+        && !(cur == "stable" && !host.cgroup_v2)
+    {
+        note = Some(format!(
+            "keeping the {cur} line already configured here, not moving to {channel} (E-64)"
+        ));
+        channel = cur;
+    }
     if let Some(n) = note {
         r.add("incus line", St::Degraded, n);
     } else {
@@ -84,11 +133,21 @@ fn packages(cfg: &Config, host: &Host, runner: &dyn Runner, r: &mut Report) {
                 "ca-certificates",
                 "tar",
             ])));
+            let have = !crate::layout::detect().flavor.is_empty();
+            let st = match (out.ok(), out.stdout.contains("Installing "), have) {
+                (true, false, _) => St::Ok,
+                (true, true, _) => St::Changed,
+                // A refresh is not needed to change the configuration (E-45).
+                (false, _, true) => St::Degraded,
+                (false, _, false) => St::Failed,
+            };
             r.add(
                 "packages",
-                if out.ok() { St::Ok } else { St::Failed },
+                st,
                 if out.ok() {
                     "apk: incus, lxcfs, btrfs-progs".to_owned()
+                } else if have {
+                    format!("apk add: {}; using the installed Incus", out.why())
                 } else {
                     format!(
                         "apk add: {} (Incus is in Alpine's community repository)",
@@ -110,6 +169,30 @@ fn packages(cfg: &Config, host: &Host, runner: &dyn Runner, r: &mut Report) {
         }
     }
     let v = runner.run(&Cmd::new("incus").arg("version"));
+    // Incus 7 and later refuse cgroup v1 (E-04): an installed one cannot run
+    // here, whatever installed it.
+    for (what, ver) in [
+        ("client", client_version(&v.stdout)),
+        (
+            "server",
+            v.stdout
+                .lines()
+                .find_map(|l| l.strip_prefix("Server version:"))
+                .map(|x| x.trim().to_owned()),
+        ),
+    ] {
+        let major = ver
+            .as_deref()
+            .and_then(|x| x.split('.').next()?.parse::<u32>().ok());
+        if !host.cgroup_v2 && major.is_some_and(|m| m >= 7) {
+            r.add(
+                "incus version",
+                St::Failed,
+                format!("the {what} is Incus {}, which refuses cgroup v1, and this host has cgroup v1; install the 6.0 LTS line (E-04)", ver.unwrap_or_default()),
+            );
+            return;
+        }
+    }
     match client_version(&v.stdout) {
         Some(ver) if lacks_idmap_fix(&ver) => r.add("incus version", St::Degraded, format!("{ver}: never uses idmapped mounts, so each new isolated instance rewrites its rootfs (about 2-3 s, E-20); 6.0.1 and later fix it")),
         Some(ver) => r.add("incus version", St::Ok, ver),
@@ -117,15 +200,62 @@ fn packages(cfg: &Config, host: &Host, runner: &dyn Runner, r: &mut Report) {
     }
 }
 
+/// The count apt prints as `N newly installed`.
+pub fn apt_installed(stdout: &str) -> u32 {
+    stdout
+        .lines()
+        .find_map(|l| {
+            let (head, _) = l.split_once(" newly installed")?;
+            head.rsplit(", ").next()?.trim().parse().ok()
+        })
+        .unwrap_or(0)
+}
+
+/// Why apt cannot reach an `http://` source through a proxy that only
+/// tunnels (CONNECT), when that is the likely cause (E-44).
+fn apt_http_hint() -> Option<String> {
+    let proxied = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
+        .iter()
+        .any(|k| crate::run::env(k).is_some());
+    let mut files = vec![PathBuf::from("/etc/apt/sources.list")];
+    if let Ok(d) = fs::read_dir("/etc/apt/sources.list.d") {
+        files.extend(d.flatten().map(|e| e.path()));
+    }
+    let http = files.iter().any(|f| {
+        fs::read_to_string(f)
+            .unwrap_or_default()
+            .lines()
+            .any(|l| !l.trim_start().starts_with('#') && l.contains("http://"))
+    });
+    (proxied && http).then(|| "the apt sources use http://, and a proxy that only tunnels (CONNECT) cannot carry it; switch them to https:// (E-44)".to_owned())
+}
+
 fn apt(host: &Host, channel: &str, runner: &dyn Runner, r: &mut Report) {
     let upd = runner.run(&long(Cmd::new("apt-get").args(["-q", "update"])));
     if !upd.ok() {
-        r.add("apt", St::Failed, format!("apt-get update: {}", upd.why()));
+        let mut why = format!("apt-get update: {}", upd.why());
+        if let Some(h) = apt_http_hint() {
+            why = format!("{why}; {h}");
+        }
+        // With Incus already installed, a package refresh is not needed to
+        // change the configuration or the credentials (E-45).
+        if !crate::layout::detect().flavor.is_empty() && host::which("incus").is_some() {
+            r.add(
+                "apt",
+                St::Degraded,
+                format!("{why}; using the installed Incus"),
+            );
+            return;
+        }
+        r.add("apt", St::Failed, why);
         return;
     }
+    // --no-upgrade: a second setup must not upgrade incus under running
+    // sessions; upgrades are the operator's (docs/operations.md).
     let base = runner.run(&long(Cmd::new("apt-get").args([
         "-q",
         "-y",
+        "--no-upgrade",
         "install",
         "curl",
         "ca-certificates",
@@ -144,18 +274,35 @@ fn apt(host: &Host, channel: &str, runner: &dyn Runner, r: &mut Report) {
         );
         return;
     }
-    if let Some(suite) = host.zabbly_suite() {
+    // A suite missing from the compiled-in list (a release newer than this
+    // program) is used when Zabbly's repository has it (E-52).
+    let probed;
+    let suite = match host.zabbly_suite() {
+        Some(s) => Some(s),
+        None => {
+            probed = host.suite_candidates().into_iter().find(|c| {
+                runner
+                    .run(&Cmd::new("curl").args([
+                        "-fsI",
+                        "-o",
+                        "/dev/null",
+                        &format!("https://pkgs.zabbly.com/incus/{channel}/dists/{c}/Release"),
+                    ]))
+                    .ok()
+            });
+            probed
+        }
+    };
+    if let Some(suite) = suite {
         let key = Path::new("/etc/apt/keyrings/zabbly.asc");
         if !key.exists() {
             let tmp = "/etc/apt/keyrings/zabbly.asc.part";
             let _ = fs::create_dir_all("/etc/apt/keyrings");
             let got = runner.run(&Cmd::new("curl").args(["-fsSL", "-o", tmp, ZABBLY_KEY_URL]));
             let fpr = runner.run(&Cmd::new("gpg").args(["--show-keys", "--with-colons", tmp]));
-            let ok = got.ok()
-                && fpr
-                    .stdout
-                    .lines()
-                    .any(|l| l.starts_with("fpr:") && l.contains(ZABBLY_FPR));
+            // Exactly the one key, not just a keyring that contains it among
+            // others (E-55).
+            let ok = got.ok() && key_is_only(&fpr.stdout, ZABBLY_FPR);
             if !ok {
                 let _ = fs::remove_file(tmp);
                 r.add(
@@ -215,18 +362,48 @@ fn apt(host: &Host, channel: &str, runner: &dyn Runner, r: &mut Report) {
             ),
         );
     }
-    let inc = runner.run(&long(
-        Cmd::new("apt-get").args(["-q", "-y", "install", "incus"]),
-    ));
+    let inc = runner.run(&long(Cmd::new("apt-get").args([
+        "-q",
+        "-y",
+        "--no-upgrade",
+        "install",
+        "incus",
+    ])));
+    let installed = apt_installed(&base.stdout) + apt_installed(&inc.stdout);
     r.add(
         "packages",
-        if inc.ok() { St::Ok } else { St::Failed },
+        match (inc.ok(), installed) {
+            (false, _) => St::Failed,
+            (true, 0) => St::Ok,
+            (true, _) => St::Changed,
+        },
         if inc.ok() {
-            "incus, lxcfs, btrfs-progs".to_owned()
+            format!("incus, lxcfs, btrfs-progs ({installed} newly installed)")
         } else {
             format!("apt-get install incus: {}", inc.why())
         },
     );
+}
+
+/// Create `path` as a directory owned by `uid:gid` with mode `mode`,
+/// refusing to follow a symlink. setup runs as root and `path` is under
+/// errand's own home, which the errand account owns and could fill with a
+/// symlink to a root-owned file; chown must not follow it (E-54).
+pub fn safe_dir(path: &Path, uid: u32, gid: u32, mode: u32) -> Result<(), String> {
+    if let Ok(md) = fs::symlink_metadata(path)
+        && md.file_type().is_symlink()
+    {
+        fs::remove_file(path)
+            .map_err(|e| format!("cannot remove the symlink {}: {e}", path.display()))?;
+    }
+    fs::create_dir_all(path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+    // lchown, not chown: path is now a real directory, and nothing we would
+    // follow replaced it between the check and here.
+    std::os::unix::fs::lchown(path, Some(uid), Some(gid))
+        .map_err(|e| format!("cannot chown {}: {e}", path.display()))?;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .map_err(|e| format!("cannot set the mode of {}: {e}", path.display()))?;
+    Ok(())
 }
 
 /// Append `line` to `file` unless it is there. Returns whether it changed.
@@ -243,6 +420,17 @@ pub fn ensure_line(file: &Path, line: &str) -> Result<bool, String> {
     new.push('\n');
     fs::write(file, new).map_err(|e| format!("cannot write {}: {e}", file.display()))?;
     Ok(true)
+}
+
+/// How many isolated instances root's subordinate ids hold: each takes a
+/// block of 65536, and the first block is the host's own.
+pub fn isolated_capacity(text: &str) -> u64 {
+    let total: u64 = text
+        .lines()
+        .filter(|l| l.split(':').next() == Some("root"))
+        .filter_map(|l| l.split(':').nth(2)?.trim().parse::<u64>().ok())
+        .sum();
+    (total / 65536).saturating_sub(1)
 }
 
 /// True when `owner` has any range in a subordinate id file.
@@ -305,6 +493,16 @@ fn users(cfg: &Config, runner: &dyn Runner, r: &mut Report) -> Option<(u32, u32,
         );
         return None;
     }
+    for g in [up::ADMIN_GROUP, up::USER_GROUP] {
+        match up::ensure_group(g, runner) {
+            Ok(true) => r.add("groups", St::Changed, format!("created {g} (E-35)")),
+            Ok(false) => {}
+            Err(e) => {
+                r.add("groups", St::Failed, e);
+                return None;
+            }
+        }
+    }
     let groups = runner.run(&Cmd::new("id").args(["-nG", u]));
     if !groups.stdout.split_whitespace().any(|g| g == "incus") {
         let out = if host::which("usermod").is_some() {
@@ -340,18 +538,25 @@ fn users(cfg: &Config, runner: &dyn Runner, r: &mut Report) -> Option<(u32, u32,
         c |= ensure_line(p, &format!("root:{id}:1")).unwrap_or(false);
         changed |= c;
     }
+    let cap = isolated_capacity(&fs::read_to_string("/etc/subuid").unwrap_or_default());
     r.add(
         "subordinate ids",
-        if changed { St::Changed } else { St::Ok },
-        format!("root may map {u} ({uid}:{gid}) into its guests"),
+        match (cap < 64, changed) {
+            (true, _) => St::Degraded,
+            (false, true) => St::Changed,
+            (false, false) => St::Ok,
+        },
+        if cap < 64 {
+            format!("root's ranges in /etc/subuid hold {cap} isolated instances; every session instance, stopped ones too, needs its own block of 65536: give root a larger range, such as root:1000000:1000000000 (E-53)")
+        } else {
+            format!("root may map {u} ({uid}:{gid}) into its guests; room for {cap} instances")
+        },
     );
     for d in ["projects", "state"] {
-        let p = Path::new(&cfg.errand.home).join(d);
-        let _ = fs::create_dir_all(&p);
-        let _ = runner.run(
-            &Cmd::new("chown").args([format!("{uid}:{gid}"), p.to_string_lossy().into_owned()]),
-        );
-        let _ = fs::set_permissions(&p, fs::Permissions::from_mode(0o750));
+        if let Err(e) = safe_dir(&Path::new(&cfg.errand.home).join(d), uid, gid, 0o750) {
+            r.add("errand home", St::Failed, e);
+            return None;
+        }
     }
     Some((uid, gid, changed))
 }
@@ -432,6 +637,12 @@ fn binaries(cfg: &Config, host: &Host, runner: &dyn Runner, r: &mut Report, cach
     }
     c |= link("../bin/errand-box", &Path::new(SHIM_DIR).join("bailey")).unwrap_or(false);
     c |= link(SELF_BIN, Path::new("/usr/local/bin/errand-box")).unwrap_or(false);
+    // An earlier bootstrap.sh installed a copy in /usr/local/sbin, which
+    // comes first on root's PATH and would shadow every later version.
+    let old = Path::new("/usr/local/sbin/errand-box");
+    if old.exists() {
+        c |= link(SELF_BIN, old).unwrap_or(false);
+    }
     r.add(
         "errand-box",
         if c { St::Changed } else { St::Ok },
@@ -512,6 +723,94 @@ fn s6(host: &Host, runner: &dyn Runner, r: &mut Report) {
     }
 }
 
+/// OpenRC runs every executable `/etc/local.d/*.start` at boot, through
+/// its `local` service.
+pub const LOCAL_START: &str = "/etc/local.d/errand-box.start";
+/// The OpenRC services of Alpine's incus and lxcfs packages. errand-box's
+/// s6 runs these daemons; a second incusd on the same socket fails (E-36).
+const OPENRC_TWINS: &[&str] = &["incusd", "incus-user", "lxcfs"];
+
+/// The boot step: systemd starts its units; OpenRC gets a `local` script
+/// that runs `errand-box up`; a host with no init gets nothing and is
+/// reported (E-02, E-36).
+fn boot_hook(host: &Host, runner: &dyn Runner, r: &mut Report) {
+    if host.systemd {
+        return;
+    }
+    if !host.openrc {
+        r.add(
+            "boot",
+            St::Degraded,
+            "nothing on this host runs errand-box at boot; run `errand-box up` after every restart (E-02)",
+        );
+        return;
+    }
+    let text = format!(
+        "#!/bin/sh\n# Written by errand-box setup: bring the daemons back at boot (E-36).\nmkdir -p {log}\n{SELF_BIN} up > {log}/boot.log 2>&1 &\n",
+        log = up::LOG_DIR
+    );
+    let mut notes = Vec::new();
+    let mut st = St::Ok;
+    match up::write_if_changed(Path::new(LOCAL_START), &text, 0o755) {
+        Ok(true) => {
+            st = St::Changed;
+            notes.push(format!("wrote {LOCAL_START}"));
+        }
+        Ok(false) => {}
+        Err(e) => {
+            r.add("boot", St::Failed, e);
+            return;
+        }
+    }
+    if !runlevels_with("local").iter().any(|l| l == "default") {
+        let out = runner.run(&Cmd::new("rc-update").args(["add", "local", "default"]));
+        if !out.ok() {
+            r.add(
+                "boot",
+                St::Failed,
+                format!("rc-update add local: {}", out.why()),
+            );
+            return;
+        }
+        st = St::Changed;
+        notes.push("added local to the default runlevel".into());
+    }
+    for svc in OPENRC_TWINS {
+        let levels = runlevels_with(svc);
+        if levels.is_empty() {
+            continue;
+        }
+        let _ = runner.run(&Cmd::new("rc-service").args([*svc, "stop"]));
+        st = St::Changed;
+        for lv in levels {
+            let out = runner.run(&Cmd::new("rc-update").args(["del", svc, &lv]));
+            notes.push(if out.ok() {
+                format!("removed OpenRC's {svc} from {lv}: s6 runs it")
+            } else {
+                format!("cannot remove OpenRC's {svc} from {lv}: {}", out.why())
+            });
+        }
+    }
+    if notes.is_empty() {
+        notes.push(format!("{LOCAL_START} runs `errand-box up`"));
+    }
+    r.add("boot", st, format!("openrc: {}", notes.join("; ")));
+}
+
+/// The OpenRC runlevels that start `svc`.
+fn runlevels_with(svc: &str) -> Vec<String> {
+    let mut v: Vec<String> = fs::read_dir("/etc/runlevels")
+        .map(|d| {
+            d.flatten()
+                .filter(|lv| lv.path().join(svc).exists())
+                .map(|lv| lv.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
 fn errand_config(cfg: &Config, args: &Args, uid: u32, gid: u32, r: &mut Report) {
     let dst = Path::new(&cfg.errand.home).join(".config/errand/config.json");
     let (Some(envp), Some(credp)) = (&args.env, &args.creds) else {
@@ -539,13 +838,15 @@ fn errand_config(cfg: &Config, args: &Args, uid: u32, gid: u32, r: &mut Report) 
         let json = errandcfg::build(&s, &c, &cfg.errand.home)?;
         let text = serde_json::to_string_pretty(&json).map_err(|e| e.to_string())? + "\n";
         let dir = dst.parent().unwrap();
-        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        let changed = up::write_if_changed(&dst, &text, 0o600)?;
-        for p in [dir.parent().unwrap(), dir, dst.as_path()] {
-            // SAFETY: chown on paths we just created.
-            let cp = std::ffi::CString::new(p.as_os_str().as_encoded_bytes()).unwrap();
-            unsafe { libc::chown(cp.as_ptr(), uid, gid) };
+        // The .config and .config/errand directories, made safe so a
+        // planted symlink cannot redirect root's chown (E-54).
+        safe_dir(dir.parent().unwrap(), uid, gid, 0o700)?;
+        safe_dir(dir, uid, gid, 0o700)?;
+        if fs::symlink_metadata(&dst).is_ok_and(|m| m.file_type().is_symlink()) {
+            fs::remove_file(&dst).map_err(|e| e.to_string())?;
         }
+        let changed = up::write_if_changed(&dst, &text, 0o600)?;
+        std::os::unix::fs::lchown(&dst, Some(uid), Some(gid)).map_err(|e| e.to_string())?;
         Ok((changed, errandcfg::summary(&s, &c)))
     })();
     match res {
@@ -563,8 +864,11 @@ fn pool_size(cfg: &Config) -> String {
         return cfg.engine.pool_size.clone();
     }
     let free = statvfs_free("/var/lib/incus").unwrap_or(40 << 30);
-    let gib = (free / 2) >> 30;
-    format!("{}GiB", gib.max(20))
+    // At least three sessions' quota: a pool the size of one session's
+    // quota is full as soon as one session fills its disk.
+    let disk = crate::config::incus_bytes(&cfg.boxes.disk).unwrap_or(20 << 30);
+    let floor = (disk.saturating_mul(3) >> 30).max(20);
+    format!("{}GiB", ((free / 2) >> 30).max(floor))
 }
 
 fn statvfs_free(p: &str) -> Option<u64> {
@@ -711,6 +1015,9 @@ fn project(
         .and_then(|v| v.as_str())
         != Some("allow")
     {
+        // The broker link needs proxy devices. Allowing them also lets the
+        // errand account point one at any host socket, which is more than
+        // the restricted project otherwise grants it (E-61, T-020).
         let out = admin.run(["project", "set", &project, "restricted.devices.proxy=allow"]);
         r.add(
             "broker devices",
@@ -724,29 +1031,17 @@ fn project(
     }
     let old = image::alias_target(&pinc, &cfg.image.alias);
     if old.as_deref() != Some(fp) {
-        let dir = Path::new(paths::SYSTEM_STATE).join("images");
-        let _ = fs::create_dir_all(&dir);
-        let base = dir.join("guest");
-        let base_s = base.to_string_lossy().into_owned();
-        let ex = runner.run(
-            &admin
-                .cmd(["image", "export", &cfg.image.alias, &base_s])
-                .timeout(Duration::from_secs(1800)),
-        );
-        let file = format!("{base_s}.tar.gz");
-        let _ = pinc.run(["image", "alias", "delete", &cfg.image.alias]);
-        let im = runner.run(
-            &pinc
-                .cmd(["image", "import", &file, "--alias", &cfg.image.alias])
-                .timeout(Duration::from_secs(1800)),
-        );
-        let _ = fs::remove_file(&file);
-        if !ex.ok() || !im.ok() {
-            r.add(
-                "project image",
-                St::Failed,
-                format!("export: {} import: {}", ex.why(), im.why()),
-            );
+        // A copy between projects of one server needs a network listener;
+        // export and import do not (E-26). The project alias moves only
+        // once the image is in the project, so a failure keeps the old one.
+        if pinc.query(&format!("/1.0/images/{fp}")).is_err()
+            && let Err(e) = copy_image_into(&admin, &pinc, &cfg.image.alias)
+        {
+            r.add("project image", St::Failed, e);
+            return None;
+        }
+        if let Err(e) = pinc.move_alias(&cfg.image.alias, fp) {
+            r.add("project image", St::Failed, e);
             return None;
         }
         // The golden instance is remade from the new image below; copies
@@ -754,8 +1049,6 @@ fn project(
         if let Some(o) = old {
             let _ = pinc.run(["image", "delete", &o]);
         }
-        // A copy between projects of one server needs a network listener;
-        // export and import do not (E-26).
         r.add(
             "project image",
             St::Changed,
@@ -786,15 +1079,20 @@ fn project(
         .and_then(|v| v.as_str())
         .unwrap_or("");
     if root_pool != cfg.engine.pool || root_size != cfg.boxes.disk {
-        let out = pinc.run([
-            "profile",
-            "device",
-            "set",
-            "default",
-            "root",
-            &format!("pool={}", cfg.engine.pool),
-            &format!("size={}", cfg.boxes.disk),
-        ]);
+        // incus-user gives the project's profile a root disk; one that has
+        // none gets it added rather than set.
+        let verb = if prof.pointer("/devices/root").is_some() {
+            ["profile", "device", "set", "default", "root"].to_vec()
+        } else {
+            [
+                "profile", "device", "add", "default", "root", "disk", "path=/",
+            ]
+            .to_vec()
+        };
+        let mut args: Vec<String> = verb.into_iter().map(str::to_owned).collect();
+        args.push(format!("pool={}", cfg.engine.pool));
+        args.push(format!("size={}", cfg.boxes.disk));
+        let out = pinc.run(args);
         if out.ok() {
             changed.push(format!("root {} on {}", cfg.boxes.disk, cfg.engine.pool));
         } else {
@@ -811,6 +1109,14 @@ fn project(
         ),
         ("limits.memory", cfg.boxes.memory.clone()),
         ("limits.cpu", cfg.box_cpus(host.cpus).to_string()),
+        (
+            "limits.processes",
+            if cfg.boxes.pids == 0 {
+                String::new()
+            } else {
+                cfg.boxes.pids.to_string()
+            },
+        ),
         // incusd restarts, after a host restart, every instance that was
         // running; a session instance must run only under its launcher.
         ("boot.autostart", "false".to_owned()),
@@ -852,6 +1158,59 @@ fn project(
     Some(project)
 }
 
+/// Export `alias` from the default project and import it into `pinc`'s.
+/// The export's file names follow the server's compression and the image's
+/// shape (one file, or metadata and rootfs), so they are read back from a
+/// directory of their own.
+fn copy_image_into(admin: &Incus, pinc: &Incus, alias: &str) -> Result<(), String> {
+    let dir = Path::new(paths::SYSTEM_STATE)
+        .join("images")
+        .join(format!("export-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let res = (|| {
+        let base = dir.join("guest").to_string_lossy().into_owned();
+        let ex = admin.runner.run(
+            &admin
+                .cmd(["image", "export", alias, &base])
+                .timeout(Duration::from_secs(1800)),
+        );
+        if !ex.ok() {
+            return Err(format!("export: {}", ex.why()));
+        }
+        let mut files: Vec<String> = fs::read_dir(&dir)
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .map(|e| e.path().to_string_lossy().into_owned())
+            .collect();
+        // The metadata tarball sorts before the rootfs (guest.tar.* < guest.*).
+        files.sort_by_key(|f| (!f.contains(".tar"), f.clone()));
+        if files.is_empty() || files.len() > 2 {
+            return Err(format!(
+                "export wrote {} files to {}",
+                files.len(),
+                dir.display()
+            ));
+        }
+        let mut args = vec!["image".to_owned(), "import".to_owned()];
+        args.extend(files);
+        let im = pinc
+            .runner
+            .run(&pinc.cmd(args).timeout(Duration::from_secs(1800)));
+        if im.ok() {
+            Ok(())
+        } else {
+            Err(format!("import: {}", im.why()))
+        }
+    })();
+    let _ = fs::remove_dir_all(&dir);
+    res
+}
+
+/// The name a new golden instance is made under before it replaces the old
+/// one, so sessions always have one to copy.
+pub const GOLDEN_NEXT: &str = "eb-golden-next";
+
 fn golden(cfg: &Config, project: &str, fp: &str, runner: &dyn Runner, r: &mut Report) -> bool {
     let pinc = Incus::new(
         Endpoint {
@@ -860,7 +1219,7 @@ fn golden(cfg: &Config, project: &str, fp: &str, runner: &dyn Runner, r: &mut Re
         },
         runner,
     );
-    match pinc.instance(GOLDEN) {
+    let had = match pinc.instance(GOLDEN) {
         Ok(Some(i)) if i.config.get(IMAGE_KEY).map(String::as_str) == Some(fp) => {
             r.add(
                 "golden instance",
@@ -869,20 +1228,22 @@ fn golden(cfg: &Config, project: &str, fp: &str, runner: &dyn Runner, r: &mut Re
             );
             return true;
         }
-        Ok(Some(_)) => {
-            let _ = pinc.delete(GOLDEN);
-        }
-        Ok(None) => {}
+        Ok(found) => found.is_some(),
         Err(e) => {
             r.add("golden instance", St::Failed, e);
             return false;
         }
-    }
-    match pinc.init(
-        &cfg.image.alias,
-        GOLDEN,
-        &[(IMAGE_KEY.to_owned(), fp.to_owned())],
-    ) {
+    };
+    let _ = pinc.delete(GOLDEN_NEXT);
+    let made = pinc
+        .init(
+            &cfg.image.alias,
+            GOLDEN_NEXT,
+            &[(IMAGE_KEY.to_owned(), fp.to_owned())],
+        )
+        .and_then(|()| if had { pinc.delete(GOLDEN) } else { Ok(()) })
+        .and_then(|()| pinc.rename(GOLDEN_NEXT, GOLDEN));
+    match made {
         Ok(()) => {
             r.add(
                 "golden instance",
@@ -892,14 +1253,27 @@ fn golden(cfg: &Config, project: &str, fp: &str, runner: &dyn Runner, r: &mut Re
             true
         }
         Err(e) => {
-            r.add("golden instance", St::Failed, e);
+            let _ = pinc.delete(GOLDEN_NEXT);
+            let kept = matches!(pinc.instance(GOLDEN), Ok(Some(_)));
+            r.add(
+                "golden instance",
+                St::Failed,
+                if kept {
+                    format!("{e}; the old {GOLDEN} is kept, so sessions still start")
+                } else {
+                    e
+                },
+            );
             false
         }
     }
 }
 
 pub fn setup(args: &Args, runner: &dyn Runner) -> Report {
-    let mut r = Report::default();
+    let mut r = Report {
+        live: args.live,
+        ..Report::default()
+    };
     if paths::euid() != 0 {
         r.add("root", St::Failed, "errand-box setup needs root");
         return r;
@@ -930,8 +1304,14 @@ pub fn setup(args: &Args, runner: &dyn Runner) -> Report {
             Err(_) => r.add("config", St::Ok, "defaults (no file given)"),
         }
     }
+    // What `up` falls back to if the live file is broken later (E-42).
+    let applied = fs::read_to_string(&args.config).unwrap_or_default();
+    let _ = fs::create_dir_all(paths::SYSTEM_STATE);
+    if let Err(e) = up::write_if_changed(Path::new(crate::config::APPLIED_PATH), &applied, 0o644) {
+        r.add("config", St::Degraded, format!("cannot keep a copy: {e}"));
+    }
     if cfg.engine.mode != "root" {
-        r.add("engine", St::Failed, "engine.mode = rootless is not set up by this command yet; docs/rootless.md has the measured procedure and TODO/engine.md the entry");
+        r.add("engine", St::Failed, "engine.mode = rootless is not set up by this command yet; docs/research/rootless.md has the measured procedure and TODO/setup.md entry T-010 the plan");
         return r;
     }
     let host = host::detect();
@@ -956,6 +1336,7 @@ pub fn setup(args: &Args, runner: &dyn Runner) -> Report {
     };
     s6(&host, runner, &mut r);
     binaries(&cfg, &host, runner, &mut r, &cache);
+    boot_hook(&host, runner, &mut r);
     errand_config(&cfg, args, uid, gid, &mut r);
     if r.failed() {
         return r;
@@ -979,6 +1360,14 @@ pub fn setup(args: &Args, runner: &dyn Runner) -> Report {
             return r;
         }
     };
+    if cfg.image.source == "release" {
+        r.add(
+            "guest image",
+            St::Failed,
+            "image.source = \"release\" needs a release that publishes the image, and none does yet (T-014); use \"build\", or `errand-box image import DIR` with a distrobuilder build",
+        );
+        return r;
+    }
     let have = image::alias_target(&admin, &cfg.image.alias);
     let current = have
         .as_deref()
@@ -1037,6 +1426,18 @@ pub fn setup(args: &Args, runner: &dyn Runner) -> Report {
     if !golden(&cfg, &project, &fp, runner, &mut r) {
         return r;
     }
+    // The errand account's own state directory, so its launcher can create
+    // locks there; root's reap locks the same files.
+    let lock_dir = format!("{}/.local/state/errand-box/locks", cfg.errand.home);
+    let mut d = PathBuf::from(&cfg.errand.home);
+    for part in [".local", "state", "errand-box", "locks"] {
+        d.push(part);
+        // Symlink-safe: the chain is under errand's own home (E-54).
+        if let Err(e) = safe_dir(&d, uid, gid, 0o700) {
+            r.add("locks", St::Degraded, e);
+            break;
+        }
+    }
     let rt = Runtime {
         mode: "root".into(),
         incus_bin: "incus".into(),
@@ -1053,6 +1454,7 @@ pub fn setup(args: &Args, runner: &dyn Runner) -> Report {
         host_runtime_dirs: vec![BIN_DIR.into()],
         admin_project: project,
         state_root: format!("{}/state", cfg.errand.home),
+        lock_dir: lock_dir.clone(),
     };
     match up::write_if_changed(&runtime::path(), &runtime::render(&rt), 0o644) {
         Ok(ch) => r.add(
@@ -1069,7 +1471,11 @@ pub fn setup(args: &Args, runner: &dyn Runner) -> Report {
     let mut r2 = Report::default();
     up::up(&cfg, &host, runner, &mut r2);
     if let Some(row) = r2.rows.iter().find(|x| x.0 == "errand") {
-        r.rows.push(row.clone());
+        // The first `up` ran before the sandbox existed; this row replaces
+        // its errand row.
+        r.rows.retain(|x| x.0 != "errand");
+        let (step, st, d) = row.clone();
+        r.add(&step, st, d);
     }
     let doc = runner.run(&Cmd::new(SELF_BIN).args([
         "__as",
@@ -1103,15 +1509,31 @@ pub fn setup(args: &Args, runner: &dyn Runner) -> Report {
 }
 
 fn restart_incusd(host: &Host, runner: &dyn Runner, r: &mut Report) {
+    let dir = format!("{}/incusd", up::SCAN_DIR);
+    let svstat = || {
+        runner
+            .run(&Cmd::new(&up::s6_bin("s6-svstat")).arg(&dir))
+            .stdout
+    };
+    let before = crate::supervise::svstat_pid(&svstat());
     let out = if host.systemd {
         runner.run(&Cmd::new("systemctl").args(["restart", "incus.service"]))
     } else {
         // s6-supervise sends SIGTERM to the pid it started (E-12); incusd
         // leaves its guests running on SIGTERM.
-        runner
-            .run(&Cmd::new(&up::s6_bin("s6-svc")).args(["-t", &format!("{}/incusd", up::SCAN_DIR)]))
+        runner.run(&Cmd::new(&up::s6_bin("s6-svc")).args(["-t", &dir]))
     };
-    let ok = out.ok() && up::wait_incus(runner, Duration::from_secs(90)).is_ok();
+    // The old incusd answers until it has stopped: wait for the new pid
+    // first, or the check below can pass on the daemon that is going away.
+    if !host.systemd && before.is_some() {
+        let t = std::time::Instant::now();
+        while crate::supervise::svstat_pid(&svstat()) == before
+            && t.elapsed() < Duration::from_secs(60)
+        {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+    let ok = out.ok() && up::wait_incus(runner, Duration::from_secs(180)).is_ok();
     r.add(
         "incusd restart",
         if ok { St::Changed } else { St::Failed },
@@ -1126,6 +1548,18 @@ fn restart_incusd(host: &Host, runner: &dyn Runner, r: &mut Report) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_keyring_with_extra_keys_is_refused() {
+        let one = format!(
+            "pub:-:255:22:...:...::::::::::\nfpr:::::::::{ZABBLY_FPR}:\nsub:-:255:18:...\nfpr:::::::::DEADBEEF:\n"
+        );
+        assert!(key_is_only(&one, ZABBLY_FPR));
+        let other = "0".repeat(40);
+        let two = format!("{one}pub:-:255:22:...\nfpr:::::::::{other}:\n");
+        assert!(!key_is_only(&two, ZABBLY_FPR));
+        assert!(!key_is_only("", ZABBLY_FPR));
+    }
 
     #[test]
     fn zabbly_source_names_channel_suite_and_arch() {
@@ -1145,6 +1579,19 @@ mod tests {
     }
 
     #[test]
+    fn apt_counts_what_it_installed() {
+        assert_eq!(
+            apt_installed("0 upgraded, 3 newly installed, 0 to remove and 5 not upgraded.\n"),
+            3
+        );
+        assert_eq!(
+            apt_installed("0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n"),
+            0
+        );
+        assert_eq!(apt_installed("incus is already the newest version\n"), 0);
+    }
+
+    #[test]
     fn versions() {
         assert_eq!(
             client_version("Client version: 6.0.6\nServer version: 6.0.6\n").as_deref(),
@@ -1152,6 +1599,37 @@ mod tests {
         );
         assert!(lacks_idmap_fix("6.0.0"));
         assert!(!lacks_idmap_fix("6.0.6"));
+    }
+
+    #[test]
+    fn safe_dir_replaces_a_symlink_and_leaves_its_target() {
+        let base = std::env::temp_dir().join(format!("eb-safedir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let target = base.join("target");
+        fs::write(&target, "x").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+        let link = base.join("projects");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let (uid, gid) = (paths::euid(), unsafe { libc::getegid() });
+        safe_dir(&link, uid, gid, 0o750).unwrap();
+        assert!(fs::symlink_metadata(&link).unwrap().is_dir());
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+        assert_eq!(
+            fs::metadata(&link).unwrap().permissions().mode() & 0o777,
+            0o750
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn isolated_capacity_counts_root_blocks() {
+        assert_eq!(isolated_capacity("root:1000000:1000000000\n"), 15257);
+        assert_eq!(isolated_capacity("root:100000:65536\nroot:994:1\n"), 0);
+        assert_eq!(isolated_capacity("ubuntu:100000:65536000\n"), 0);
     }
 
     #[test]

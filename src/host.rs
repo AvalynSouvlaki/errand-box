@@ -11,12 +11,18 @@ pub struct Host {
     pub os_id: String,
     pub os_like: String,
     pub os_codename: String,
+    /// The Ubuntu or Debian release a derivative is built on
+    /// (UBUNTU_CODENAME, DEBIAN_CODENAME), when os-release names one.
+    pub base_codenames: Vec<String>,
     /// `glibc` or `musl`, from the dynamic loader present.
     pub libc: String,
     /// `apt`, `apk`, `dnf`, `pacman`, `zypper` or empty.
     pub pkg: String,
     /// True when PID 1 is systemd.
     pub systemd: bool,
+    /// True when OpenRC brought the host up (it leaves /run/openrc). Its
+    /// `local` service then runs `errand-box up` at boot (E-36).
+    pub openrc: bool,
     pub cgroup_v2: bool,
     pub kvm: bool,
     pub wsl: bool,
@@ -54,9 +60,15 @@ pub fn detect() -> Host {
         os_id: os_release_field(&osr, "ID"),
         os_like: os_release_field(&osr, "ID_LIKE"),
         os_codename: os_release_field(&osr, "VERSION_CODENAME"),
+        base_codenames: ["UBUNTU_CODENAME", "DEBIAN_CODENAME"]
+            .iter()
+            .map(|k| os_release_field(&osr, k))
+            .filter(|c| !c.is_empty())
+            .collect(),
         libc: detect_libc(),
         pkg: detect_pkg(),
         systemd: read("/proc/1/comm").trim() == "systemd",
+        openrc: read("/proc/1/comm").trim() != "systemd" && Path::new("/run/openrc").is_dir(),
         cgroup_v2: Path::new("/sys/fs/cgroup/cgroup.controllers").exists(),
         kvm: Path::new("/dev/kvm").exists(),
         wsl: {
@@ -141,7 +153,31 @@ impl Host {
     /// has one Zabbly builds for.
     pub fn zabbly_suite(&self) -> Option<&str> {
         let ok = ["bookworm", "trixie", "jammy", "noble", "plucky", "questing"];
-        ok.iter().copied().find(|s| *s == self.os_codename)
+        self.suite_candidates().into_iter().find(|c| ok.contains(c))
+    }
+
+    /// The codenames a Zabbly suite may be named after, most specific
+    /// first: the host's own, then the release a derivative is built on
+    /// (Linux Mint and Pop!_OS name Ubuntu's in UBUNTU_CODENAME).
+    pub fn suite_candidates(&self) -> Vec<&str> {
+        let mut v = Vec::new();
+        for c in std::iter::once(&self.os_codename).chain(&self.base_codenames) {
+            if !c.is_empty() && !v.contains(&c.as_str()) {
+                v.push(c.as_str());
+            }
+        }
+        v
+    }
+
+    /// `systemd`, `openrc`, or `none`: what starts errand-box at boot.
+    pub fn init(&self) -> &'static str {
+        if self.systemd {
+            "systemd"
+        } else if self.openrc {
+            "openrc"
+        } else {
+            "none"
+        }
     }
 
     pub fn describe(&self) -> String {
@@ -151,11 +187,7 @@ impl Host {
             self.os_codename,
             self.arch,
             self.libc,
-            if self.systemd {
-                "systemd"
-            } else {
-                "not systemd"
-            },
+            self.init(),
             if self.cgroup_v2 { "v2" } else { "v1" },
             yes(self.kvm),
             yes(self.wsl),
@@ -172,6 +204,23 @@ pub fn yes(b: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_derivative_gets_the_suite_of_its_base() {
+        let mint = Host {
+            os_codename: "wilma".into(),
+            base_codenames: vec!["noble".into()],
+            ..Host::default()
+        };
+        assert_eq!(mint.zabbly_suite(), Some("noble"));
+        assert_eq!(mint.suite_candidates(), vec!["wilma", "noble"]);
+        let future = Host {
+            os_codename: "zesty-zebra".into(),
+            ..Host::default()
+        };
+        assert_eq!(future.zabbly_suite(), None);
+        assert_eq!(future.suite_candidates(), vec!["zesty-zebra"]);
+    }
 
     #[test]
     fn channel_follows_cgroup_version() {

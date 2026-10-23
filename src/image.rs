@@ -145,7 +145,7 @@ pub fn build(
             std::thread::spawn(move || {
                 let _ = crate::relay::tcp_to_tcp(&l2, &target);
             });
-            env.insert("EB_PROXY".into(), format!("http://{listen}"));
+            env.insert("EB_PROXY".into(), crate::relay::with_authority(u, &listen));
             r.add(
                 "build proxy",
                 St::Changed,
@@ -156,7 +156,8 @@ pub fn build(
         }
     }
 
-    let name = format!("eb-build-{}", std::process::id());
+    sweep_builds(&inc, r)?;
+    let name = format!("{BUILD_PREFIX}{}", std::process::id());
     let _ = inc.delete(&name);
     let t0 = Instant::now();
     let out = inc.runner.run(
@@ -175,47 +176,106 @@ pub fn build(
         .timeout(Duration::from_secs(1200)),
     );
     if !out.ok() {
+        let _ = inc.delete(&name);
         return Err(format!("cannot launch {BASE}: {}", out.why()));
     }
-    let result = provision(&inc, &name, &kage, cfg, &env);
-    if let Err(e) = result {
-        let _ = inc.delete(&name);
-        return Err(e);
-    }
-    inc.stop(&name, 20)?;
-    let desc = format!("description=errand-box guest, Debian 13, kage {kv}");
-    let inputs = format!("{INPUTS_KEY}={}", inputs_digest(cfg, &kv));
-    let old = alias_target(&inc, &cfg.image.alias);
-    let _ = inc.run(["image", "alias", "delete", &cfg.image.alias]);
-    let out = inc.runner.run(
-        &inc.cmd([
-            "publish",
-            "-q",
-            &name,
-            "--alias",
-            &cfg.image.alias,
-            &desc,
-            &inputs,
-        ])
-        .timeout(Duration::from_secs(1800)),
-    );
+    // The build instance goes whatever happens below.
+    let res = provision(&inc, &name, &kage, cfg, &env)
+        .and_then(|()| inc.stop(&name, 20))
+        .and_then(|()| publish(&inc, &name, cfg, &kv));
     let _ = inc.delete(&name);
-    if !out.ok() {
-        return Err(format!("cannot publish the image: {}", out.why()));
-    }
-    // The image this one replaces; instances made from it keep their own
-    // volumes.
-    if let Some(o) =
-        old.filter(|o| alias_target(&inc, &cfg.image.alias).as_deref() != Some(o.as_str()))
-    {
-        let _ = inc.run(["image", "delete", &o]);
-    }
+    res?;
     r.add(
         "guest image",
         St::Changed,
         format!("built {} in {} s", cfg.image.alias, t0.elapsed().as_secs()),
     );
     Ok(())
+}
+
+/// Build instances are named this, then the pid of the errand-box that
+/// made them.
+pub const BUILD_PREFIX: &str = "eb-build-";
+
+/// The pid in a build instance's name, if that process is an errand-box
+/// that still runs.
+fn live_builder(name: &str) -> Option<i32> {
+    let pid: i32 = name.strip_prefix(BUILD_PREFIX)?.parse().ok()?;
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    (comm.trim() == "errand-box").then_some(pid)
+}
+
+/// Delete the build instances an interrupted build left (E-39), and refuse
+/// to start while another build runs.
+fn sweep_builds(inc: &Incus, r: &mut Report) -> Result<(), String> {
+    let mut gone = Vec::new();
+    for i in inc.instances(BUILD_PREFIX)? {
+        if let Some(pid) = live_builder(&i.name).filter(|p| *p != std::process::id() as i32) {
+            return Err(format!(
+                "another image build (pid {pid}, instance {}) is running",
+                i.name
+            ));
+        }
+        if inc.delete(&i.name).is_ok() {
+            gone.push(i.name);
+        }
+    }
+    if !gone.is_empty() {
+        r.add(
+            "old build instances",
+            St::Changed,
+            format!("deleted {} (E-39)", gone.join(", ")),
+        );
+    }
+    Ok(())
+}
+
+/// Publish the stopped build instance as the image, then move the alias to
+/// it and delete the image it replaces. The old image keeps the alias until
+/// the new one exists, so a failed publish leaves the host as it was.
+fn publish(inc: &Incus, name: &str, cfg: &Config, kv: &str) -> Result<(), String> {
+    let desc = format!("description=errand-box guest, Debian 13, kage {kv}");
+    let inputs = format!("{INPUTS_KEY}={}", inputs_digest(cfg, kv));
+    let old = alias_target(inc, &cfg.image.alias);
+    let out = inc.runner.run(
+        &inc.cmd(["publish", name, &desc, &inputs])
+            .timeout(Duration::from_secs(1800)),
+    );
+    let fp = published_fingerprint(&out.stdout)
+        .ok_or_else(|| format!("cannot publish the image: {}", out.why()))?;
+    inc.move_alias(&cfg.image.alias, &fp).map_err(|e| {
+        format!(
+            "published {fp}, but cannot point {} at it: {e}",
+            cfg.image.alias
+        )
+    })?;
+    // Instances made from the replaced image keep their own volumes.
+    if let Some(o) = old.filter(|o| *o != fp) {
+        let _ = inc.run(["image", "delete", &o]);
+    }
+    Ok(())
+}
+
+/// The build settings as `KEY='value'` lines for sh. A value that cannot
+/// sit in single quotes is refused.
+pub fn build_env_file(env: &BTreeMap<String, String>) -> Result<String, String> {
+    let mut s = String::new();
+    for (k, v) in env {
+        if v.contains('\'') || v.contains('\n') {
+            return Err(format!("{k} has a quote or a newline"));
+        }
+        s.push_str(&format!("{k}='{v}'\n"));
+    }
+    Ok(s)
+}
+
+/// The fingerprint `incus publish` prints.
+pub fn published_fingerprint(stdout: &str) -> Option<String> {
+    let fp = stdout
+        .lines()
+        .find_map(|l| l.split("fingerprint:").nth(1))?
+        .trim();
+    (fp.len() >= 12 && fp.chars().all(|c| c.is_ascii_hexdigit())).then(|| fp.to_owned())
 }
 
 fn provision(
@@ -233,7 +293,9 @@ fn provision(
             break;
         }
         if t.elapsed() > Duration::from_secs(120) {
-            return Err(format!("{name} got no network on {BUILD_NET}"));
+            return Err(format!(
+                "{name} got no network on {BUILD_NET} in 120 s; a firewall that drops forwarded traffic blocks the build bridge: Docker sets the FORWARD policy to DROP, and ufw denies routing by default (E-47)"
+            ));
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -266,16 +328,24 @@ fn provision(
             std::fs::read(&ca).map_err(|e| format!("cannot read the proxy CA {ca}: {e}"))?;
         push("/run/eb-build/proxy-ca.crt", bytes, "0644")?;
     }
-    let mut args: Vec<String> = vec!["exec".into(), name.into()];
-    for (k, v) in env {
-        args.push("--env".into());
-        args.push(format!("{k}={v}"));
-    }
-    args.extend([
-        "--".into(),
-        "/bin/sh".into(),
-        "/run/eb-build/provision.sh".into(),
-    ]);
+    // The settings go in a file, not on the argv of `incus exec`, where any
+    // local user could read a proxy's credentials (E-46). The distrobuilder
+    // build reads the same file.
+    push(
+        "/run/eb-build/env",
+        build_env_file(env)?.into_bytes(),
+        "0600",
+    )?;
+    let args: Vec<String> = [
+        "exec",
+        name,
+        "--",
+        "/bin/sh",
+        "-c",
+        "set -a; . /run/eb-build/env; set +a; exec /bin/sh /run/eb-build/provision.sh",
+    ]
+    .map(str::to_owned)
+    .to_vec();
     let out = inc
         .runner
         .run(&inc.cmd(args).timeout(Duration::from_secs(3600)));
@@ -299,6 +369,54 @@ mod tests {
         assert!(is_loopback("[::1]:3128"));
         assert!(!is_loopback("10.0.0.5:3128"));
         assert!(!is_loopback("proxy.corp:8080"));
+    }
+
+    #[test]
+    fn the_distrobuilder_build_records_the_same_inputs() {
+        let root = env!("CARGO_MANIFEST_DIR");
+        let out = std::process::Command::new("sh")
+            .arg(format!("{root}/scripts/build-image.sh"))
+            .arg("--print-inputs")
+            .env("KAGE_VERSION", "v0.5.0")
+            .env_remove("EB_REGISTRY_MIRROR")
+            .env_remove("EB_GUEST_PROXY_PORT")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let cfg = crate::config::parse("").unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            inputs_digest(&cfg, "v0.5.0")
+        );
+    }
+
+    #[test]
+    fn build_settings_are_a_file() {
+        let mut env = BTreeMap::new();
+        env.insert("EB_PROXY".to_owned(), "http://u:p@10.0.0.1:3128".to_owned());
+        env.insert("EB_GUEST_PROXY_PORT".to_owned(), "3128".to_owned());
+        assert_eq!(
+            build_env_file(&env).unwrap(),
+            "EB_GUEST_PROXY_PORT='3128'\nEB_PROXY='http://u:p@10.0.0.1:3128'\n"
+        );
+        env.insert("X".to_owned(), "a'b".to_owned());
+        assert!(build_env_file(&env).is_err());
+    }
+
+    #[test]
+    fn the_published_fingerprint_is_read() {
+        let fp = "3ee5b614605f".to_owned() + &"ab".repeat(26);
+        assert_eq!(
+            published_fingerprint(&format!("Instance published with fingerprint: {fp}\n"))
+                .as_deref(),
+            Some(fp.as_str())
+        );
+        assert_eq!(published_fingerprint("Error: nope\n"), None);
+        assert_eq!(published_fingerprint("fingerprint: zz\n"), None);
     }
 
     #[test]

@@ -94,12 +94,14 @@ pub fn s6_log_run(name: &str, s6_log: &str, dir: &str) -> String {
     )
 }
 
-/// The pid in an `s6-svstat` line such as `up (pid 123) 4 seconds`.
+/// The pid in an `s6-svstat` line. Older s6 prints `up (pid 123) 4 seconds`;
+/// newer s6 prints `up (pid 123 pgid 123) 4 seconds`, so take the first
+/// number after `(pid `, not everything up to the `)` (E-62).
 pub fn svstat_pid(state: &str) -> Option<u32> {
     state
         .split("(pid ")
         .nth(1)?
-        .split(')')
+        .split([' ', ')'])
         .next()?
         .trim()
         .parse()
@@ -115,7 +117,7 @@ pub fn svstat_seconds(state: &str) -> Option<u64> {
 }
 
 /// A systemd unit for a service.
-pub fn systemd_unit(s: &Service, errand_box: &str, after: &[&str]) -> String {
+pub fn systemd_unit(s: &Service, errand_box: &str, after: &[&str], before: &[&str]) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
@@ -124,6 +126,9 @@ pub fn systemd_unit(s: &Service, errand_box: &str, after: &[&str]) -> String {
     let _ = writeln!(out, "[Unit]\nDescription={}", s.description);
     if !after.is_empty() {
         let _ = writeln!(out, "After={}\nWants={}", after.join(" "), after.join(" "));
+    }
+    if !before.is_empty() {
+        let _ = writeln!(out, "Before={}", before.join(" "));
     }
     let _ = writeln!(out, "\n[Service]");
     let _ = writeln!(out, "Environment=PATH={PATH_VALUE}");
@@ -186,6 +191,11 @@ mod tests {
     #[test]
     fn svstat_lines() {
         assert_eq!(svstat_pid("up (pid 8877) 0 seconds"), Some(8877));
+        assert_eq!(svstat_pid("up (pid 8877 pgid 8877) 0 seconds"), Some(8877));
+        assert_eq!(
+            svstat_seconds("up (pid 8877 pgid 8877) 28 seconds"),
+            Some(28)
+        );
         assert_eq!(svstat_seconds("up (pid 8877) 1284 seconds"), Some(1284));
         assert_eq!(
             svstat_seconds("up (pid 8877) 1 second, normally down"),
@@ -198,7 +208,8 @@ mod tests {
     fn prepare_lines_may_fail() {
         assert!(s6_run(&svc(), "/e").contains("mkdir -p /x || true\n"));
         assert!(
-            systemd_unit(&svc(), "/e", &[]).contains("ExecStartPre=-/bin/sh -c 'mkdir -p /x'\n")
+            systemd_unit(&svc(), "/e", &[], &[])
+                .contains("ExecStartPre=-/bin/sh -c 'mkdir -p /x'\n")
         );
     }
 
@@ -217,7 +228,9 @@ mod tests {
             &svc(),
             "/usr/local/lib/errand-box/bin/errand-box",
             &["incus.service"],
+            &["x.service"],
         );
+        assert!(u.contains("Before=x.service\n"));
         assert!(u.contains("KillMode=process\n"));
         assert!(u.contains("After=incus.service\n"));
         assert!(u.contains("ExecStart=/usr/local/lib/errand-box/bin/errand-box __as errand -- /usr/local/lib/errand-box/bin/errand run\n"));

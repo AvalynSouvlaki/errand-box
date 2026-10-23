@@ -32,11 +32,41 @@ impl St {
 #[derive(Clone, Debug, Default)]
 pub struct Report {
     pub rows: Vec<(String, St, String)>,
+    /// Print each row to stderr as it is added: a setup that takes half an
+    /// hour, or is interrupted, then shows how far it got.
+    pub live: bool,
 }
 
 impl Report {
+    pub fn live() -> Self {
+        Report {
+            live: true,
+            ..Report::default()
+        }
+    }
+
     pub fn add(&mut self, step: &str, st: St, detail: impl Into<String>) {
-        self.rows.push((step.to_owned(), st, detail.into()));
+        let detail = detail.into();
+        if self.live {
+            eprintln!("errand-box: {step}: {} {detail}", st.word());
+        }
+        self.rows.push((step.to_owned(), st, detail));
+    }
+
+    /// The rows and the counts as JSON, for a program to read.
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "rows": self.rows.iter().map(|(step, st, d)| serde_json::json!({
+                "step": step,
+                "status": st.word().to_ascii_lowercase(),
+                "detail": d,
+            })).collect::<Vec<_>>(),
+            "changed": self.count(St::Changed),
+            "ok": self.count(St::Ok),
+            "degraded": self.count(St::Degraded),
+            "failed": self.count(St::Failed),
+            "skipped": self.count(St::Skipped),
+        })
     }
 
     pub fn count(&self, st: St) -> usize {
